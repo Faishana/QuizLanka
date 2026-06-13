@@ -22,10 +22,6 @@ return new class extends Migration
                 ->constrained()
                 ->cascadeOnDelete();
 
-            $table->foreignId('lesson_id')
-                ->constrained()
-                ->cascadeOnDelete();
-
             $table->foreignId('uploaded_by')
                 ->constrained('users')
                 ->cascadeOnDelete();
@@ -51,7 +47,6 @@ return new class extends Migration
 
             $table->index('grade_id');
             $table->index('subject_id');
-            $table->index('lesson_id');
             $table->index('processing_status');
         });
     }

@@ -38,6 +38,26 @@ class SubjectController extends Controller
         ]);
     }
 
+        /**
+        * Lessons By Subject
+        */
+
+    public function bySubject($subjectId)
+    {
+        $lessons = Lesson::where(
+                'subject_id',
+                $subjectId
+            )
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $lessons
+        ]);
+    }
+
     /**
      * Create Subject
      */

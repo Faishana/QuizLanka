@@ -9,6 +9,10 @@ use App\Services\OcrExtractionService;
 use App\Services\AiQuestionGenerationService;
 use Illuminate\Http\JsonResponse;
 use App\Models\Question;
+use App\Jobs\GenerateQuestionsFromChunksJob;
+
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 
 class MaterialController extends Controller
 {
@@ -19,8 +23,6 @@ class MaterialController extends Controller
         'grade_id' => 'required|exists:grades,id',
 
         'subject_id' => 'required|exists:subjects,id',
-
-        'lesson_id' => 'required|exists:lessons,id',
 
         'title' => 'required|string|max:255',
 
@@ -93,8 +95,6 @@ class MaterialController extends Controller
         'grade_id' => $request->grade_id,
 
         'subject_id' => $request->subject_id,
-
-        'lesson_id' => $request->lesson_id,
 
         'uploaded_by' => auth()->id(),
 
@@ -175,7 +175,6 @@ class MaterialController extends Controller
         $material = Material::with([
             'grade',
             'subject',
-            'lesson',
             'uploader'
         ])->findOrFail($id);
 
@@ -207,8 +206,6 @@ class MaterialController extends Controller
 
                 'subject' => $material->subject?->name,
 
-                'lesson' => $material->lesson?->title,
-
                 'uploaded_by' => $material->uploader?->name,
 
                 'created_at' => $material->created_at,
@@ -232,7 +229,7 @@ class MaterialController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Remove Existing Questions For This Material
+            | Remove Existing Questions
             |--------------------------------------------------------------------------
             */
 
@@ -241,25 +238,91 @@ class MaterialController extends Controller
                 $material->id
             )->delete();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Generate Questions
+            |--------------------------------------------------------------------------
+            */
+
             $aiService = new AiQuestionGenerationService();
 
             $result = $aiService->generate($material);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Count Generated Questions
+            |--------------------------------------------------------------------------
+            */
 
             $totalQuestions = Question::where(
                 'material_id',
                 $material->id
             )->count();
 
+            $fileDeleted = false;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Mark Generated + Delete Source PDF
+            |--------------------------------------------------------------------------
+            */
+
+            if ($result && $totalQuestions > 0) {
+
+                $material->update([
+                    'questions_generated_at' => now(),
+                    'processing_status' => 'completed'
+                ]);
+
+                \Log::info('Delete Check', [
+                    'material_id' => $material->id,
+                    'path' => $material->file_path,
+                    'exists' => Storage::disk('public')->exists(
+                        $material->file_path
+                    )
+                ]);
+
+                if (
+                    !empty($material->file_path) &&
+                    Storage::disk('public')->exists(
+                        $material->file_path
+                    )
+                ) {
+
+                    Storage::disk('public')->delete(
+                        $material->file_path
+                    );
+
+                    $material->update([
+                        'file_path' => null,
+                        'file_name' => null,
+                        'source_file_deleted' => true
+                    ]);
+
+                    $fileDeleted = true;
+
+                    \Log::info('Source PDF Deleted', [
+                        'material_id' => $material->id
+                    ]);
+                }
+            }
+
             return response()->json([
                 'success' => $result,
                 'material_id' => $material->id,
                 'questions_generated' => $totalQuestions,
+                'source_file_deleted' => $fileDeleted,
                 'message' => $result
                     ? 'Questions generated successfully.'
                     : 'Question generation failed.'
             ]);
 
         } catch (\Exception $e) {
+
+            Log::error('Question Generation Failed', [
+                'material_id' => $id,
+                'error' => $e->getMessage()
+            ]);
 
             return response()->json([
                 'success' => false,
@@ -281,7 +344,6 @@ class MaterialController extends Controller
                 'title' => 'sometimes|required|string|max:255',
                 'grade_id' => 'sometimes|required|exists:grades,id',
                 'subject_id' => 'sometimes|required|exists:subjects,id',
-                'lesson_id' => 'sometimes|required|exists:lessons,id',
             ]);
 
             $material->update($validated);

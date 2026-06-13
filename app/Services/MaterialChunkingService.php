@@ -15,7 +15,7 @@ class MaterialChunkingService
             $material->extracted_text
         );
 
-        $chunkSize = 2500;
+        $chunkSize = 5000;
 
         $chunks = array_chunk(
             $words,

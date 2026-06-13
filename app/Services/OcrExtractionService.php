@@ -45,7 +45,7 @@ class OcrExtractionService
 
         $command =
             '"' . $pdftoppm . '" ' .
-            '-jpeg -r 300 ' .
+            '-jpeg -r 200 ' .
             '"' . $pdfPath . '" "' .
             $outputDir . '\\page"';
 
@@ -93,22 +93,19 @@ class OcrExtractionService
 
         $text = '';
 
-        foreach ($images as $image) {
+       foreach ($images as $image) {
 
-            try {
+        try {
 
-                $ocr = (new TesseractOCR($image))
-                    ->executable(
-                        'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-                    )
-                    ->lang('sin', 'eng')
-                    ->run();
+            $ocr = (new TesseractOCR($image))
+                ->executable(
+                    'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
+                )
+                ->lang('sin', 'eng')
+                ->run();
 
                 if (!empty(trim($ocr))) {
-
                     $text .= "\n\n" . $ocr;
-
-                } else {
                 }
 
             } catch (\Exception $e) {

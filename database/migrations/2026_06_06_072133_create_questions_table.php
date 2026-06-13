@@ -34,11 +34,6 @@ return new class extends Migration
                 ->constrained()
                 ->cascadeOnDelete();
 
-            $table->foreignId('lesson_id')
-                ->nullable()
-                ->constrained()
-                ->nullOnDelete();
-
             $table->foreignId('material_chunk_id')
                 ->nullable();
 

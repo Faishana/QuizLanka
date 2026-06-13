@@ -8,9 +8,9 @@ use App\Http\Controllers\Api\SubjectController;
 use App\Http\Controllers\Api\LessonController;
 use App\Http\Controllers\Api\MaterialController;
 use App\Http\Controllers\Api\MaterialQuestionController;
- use App\Http\Controllers\Api\QuizController;
- use App\Http\Controllers\Api\DashboardController;
-
+use App\Http\Controllers\Api\QuizController;
+use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\QuestionController;
 
 // API Routes
 Route::prefix('auth')->group(function () {
@@ -31,97 +31,52 @@ Route::prefix('auth')->group(function () {
 
 Route::middleware('auth:sanctum')->group(function () {
 
-    /*
-    |--------------------------------------------------------------------------
-    | Auth
-    |--------------------------------------------------------------------------
-    */
+    // Authentication
 
     Route::post('/auth/logout', [AuthController::class, 'logout']);
-
     Route::get('/auth/me', [AuthController::class, 'me']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Grades
-    |--------------------------------------------------------------------------
-    */
+    // Grades
 
     Route::get('/grades', [GradeController::class, 'index']);
+    Route::post('/grades', [GradeController::class, 'store']);
+    Route::get('/grades/{id}', [GradeController::class, 'show']);
+    Route::put('/grades/{id}', [GradeController::class, 'update']);
+    Route::delete('/grades/{id}', [GradeController::class, 'destroy']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Subjects
-    |--------------------------------------------------------------------------
-    */
+    // Subjects
 
-    // Get all subjects
     Route::get('/subjects', [SubjectController::class, 'index']);
-
-    // Get subjects by grade
     Route::get('/subjects/grade/{gradeId}', [SubjectController::class, 'byGrade']);
-
-    // Create subject
     Route::post('/subjects', [SubjectController::class, 'store']);
-
-    // Update subject
     Route::put('/subjects/{id}', [SubjectController::class, 'update']);
-
-    // Delete subject
     Route::delete('/subjects/{id}', [SubjectController::class, 'destroy']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Lessons
-    |--------------------------------------------------------------------------
-    */
 
-    // Get all lessons
+    // Lessons
+
     Route::get('/lessons', [LessonController::class, 'all']);
-    // Get lessons by subject
     Route::get('/lessons/subject/{subjectId}', [LessonController::class, 'index']);
-    // Create lesson
     Route::post('/lessons', [LessonController::class, 'store']);
-    // Update lesson
     Route::put('/lessons/{id}', [LessonController::class, 'update']);
-    // Delete lesson
     Route::delete('/lessons/{id}', [LessonController::class, 'destroy']);
+    Route::get('/lessons/subject/{subjectId}', [LessonController::class, 'bySubject']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Materials
-    |--------------------------------------------------------------------------
-    */
+    // Materials
 
-    // Get all materials
     Route::get('/materials', [MaterialController::class, 'index']);
-    // Get material by ID
     Route::get('/materials/{id}', [MaterialController::class, 'show']);
-    // Upload material
     Route::post('/materials/upload', [MaterialController::class, 'upload']);
-    // Generate questions from material
     Route::post('/materials/{id}/generate-questions', [MaterialController::class, 'generateQuestions']);
-    // Update material
     Route::put('/materials/{id}', [MaterialController::class, 'update']);
-    // Delete material
     Route::delete('/materials/{id}', [MaterialController::class, 'destroy']);
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Material Questions
-    |--------------------------------------------------------------------------
-    */
+   // Get questions for material
 
     Route::get('/materials/{material}/questions', [MaterialQuestionController::class, 'index']);
-    // Get questions by material
     Route::get('/materials/{id}/questions', [QuestionController::class, 'byMaterial']);
 
-   /*
-    |--------------------------------------------------------------------------
-    | Quiz
-    |--------------------------------------------------------------------------
-   */
+    // Create question for material
 
     Route::post('/quiz/start', [QuizController::class, 'start']);
     Route::post('/quiz/submit', [QuizController::class, 'submit']);
@@ -129,15 +84,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/quiz/history', [QuizController::class, 'history']);
     Route::get('/quiz/{quiz}/review', [QuizController::class, 'review']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Dashboard
-    |------------------------------------------------------------------------
-    */
+    // Dashboard
 
     Route::get('/dashboard', [DashboardController::class, 'index']);
-    Route::get('/admin/dashboard', [DashboardController::class, 'adminDashboard']
-);
+    Route::get('/admin/dashboard', [DashboardController::class, 'adminDashboard']);
+
+    // Questions
+
+    Route::get('/questions', [QuestionController::class, 'index']);
+    Route::get('/questions/{question}', [QuestionController::class, 'show']);
+    Route::put('/questions/{question}', [QuestionController::class, 'update']);
+    Route::delete('/questions/{question}', [QuestionController::class, 'destroy']);
+
 });
 
 

@@ -59,22 +59,6 @@ class ProcessMaterialOCR implements ShouldQueue
                 'app/public/' . $this->material->file_path
             );
 
-            $text = $extractor->extract($fullPath);
-
-            if (empty($text)) {
-
-                throw new \Exception(
-                    'No text extracted from material.'
-                );
-            }
-
-            \Log::info('Text extracted', [
-
-                'material_id' => $this->material->id,
-
-                'characters' => strlen($text)
-            ]);
-
             // Extract Text
             $text = $extractor->extract($fullPath);
 
@@ -108,6 +92,10 @@ class ProcessMaterialOCR implements ShouldQueue
 
             $text = preg_replace('/[^\PC\s]/u', '', $text);
 
+            \Log::info('Cleaned Text Size', [
+                'chars' => mb_strlen($text)
+            ]);
+
             // Save OCR Result
             $this->material->update([
                 'extracted_text' => $text,
@@ -120,6 +108,11 @@ class ProcessMaterialOCR implements ShouldQueue
             // Create Chunks
             app(\App\Services\MaterialChunkingService::class)
                 ->createChunks($this->material);
+
+            \Log::info('Chunks Created', [
+                'material_id' => $this->material->id,
+                'count' => $this->material->chunks()->count()
+            ]);
 
             // Dispatch Question Generation
             GenerateQuestionsFromChunksJob::dispatch(

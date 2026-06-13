@@ -60,6 +60,13 @@ class MaterialTextExtractionService
             $sample
         );
 
+        \Log::info('Legacy Detection', [
+
+            'legacy_count' => $legacyCount,
+            'sample' => mb_substr($sample, 0, 300)
+
+        ]);
+
         /*
         |--------------------------------------------------------------------------
         | Valid Unicode Sinhala PDF

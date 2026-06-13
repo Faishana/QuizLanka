@@ -31,10 +31,33 @@ class GenerateQuestionsFromChunksJob implements ShouldQueue
                 AiQuestionGenerationService::class
             );
 
+            $chunkCount = $this->material->chunks->count();
+
+            if ($chunkCount === 0) {
+
+                \Log::warning('No chunks found', [
+                    'material_id' => $this->material->id
+                ]);
+
+                return;
+            }
+
+            $questionsPerChunk = max(
+                5,
+                ceil(50 / $chunkCount)
+            );
+
+            \Log::info('Question Target', [
+                'material_id' => $this->material->id,
+                'chunks' => $chunkCount,
+                'questions_per_chunk' => $questionsPerChunk,
+            ]);
+
             foreach ($this->material->chunks as $chunk) {
 
                 $generator->generateFromChunk(
-                    $chunk
+                    $chunk,
+                    $questionsPerChunk
                 );
             }
 

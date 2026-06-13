@@ -23,7 +23,7 @@ class OpenAIService
 
     public function generateQuestions(
     string $text,
-    int $questionCount = 3
+    int $questionCount = 7
 )
 {
     $prompt = <<<PROMPT
@@ -125,7 +125,7 @@ PROMPT;
 
             'temperature' => 0.2,
 
-            'max_completion_tokens' => 4000,
+            'max_completion_tokens' => 1500,
 
             'response_format' => [
                 'type' => 'json_object'

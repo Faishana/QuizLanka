@@ -12,6 +12,12 @@ class PdfExtractionService
 
         $pdf = $parser->parseFile($pdfPath);
 
-        return trim($pdf->getText());
+        $text = trim($pdf->getText());
+
+        \Log::info('PDF Parser Result', [
+            'chars' => mb_strlen($text)
+        ]);
+
+        return $text;
     }
 }

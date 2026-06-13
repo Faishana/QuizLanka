@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Question;
 use App\Models\QuestionOption;
+use App\Models\MaterialChunk;
 use Illuminate\Support\Facades\DB;
 
 class AiQuestionGenerationService
@@ -57,19 +58,41 @@ class AiQuestionGenerationService
             |--------------------------------------------------------------------------
             */
 
-            $chunks = [$text];
+            $chunks = MaterialChunk::where(
+                'material_id',
+                $material->id
+            )
+            ->orderBy('chunk_order')
+            ->get();
+
+            if ($chunks->isEmpty()) {
+
+                \Log::error(
+                    'No Chunks Found',
+                    [
+                        'material_id' => $material->id
+                    ]
+                );
+
+                return false;
+            }
 
             $openAI = new OpenAIService();
 
             $allQuestions = [];
 
-            foreach ($chunks as $chunkIndex => $chunk) {
+            $questionsPerChunk = max(
+                3,
+                ceil(50 / $chunks->count())
+            );
+
+            foreach ($chunks as $chunk) {
 
                 try {
 
                     $response = $openAI->generateQuestions(
                         $chunk->content,
-                        3
+                        $questionsPerChunk
                     );
 
                     $decoded = json_decode(
@@ -91,8 +114,11 @@ class AiQuestionGenerationService
                 } catch (\Exception $e) {
 
                     \Log::error(
-                        'Chunk Failed: ' .
-                        $e->getMessage()
+                        'Chunk Failed',
+                        [
+                            'chunk_id' => $chunk->id,
+                            'error' => $e->getMessage()
+                        ]
                     );
                 }
             }
@@ -274,7 +300,6 @@ class AiQuestionGenerationService
                     'material_id'     => $material->id,
                     'grade_id'        => $material->grade_id,
                     'subject_id'      => $material->subject_id,
-                    'lesson_id'       => $material->lesson_id,
 
                     'question_text'   => trim($item['question']),
 
@@ -343,15 +368,23 @@ class AiQuestionGenerationService
 
     // This method is for testing with individual chunks without going through the whole process
 
-    public function generateFromChunk($chunk)
-    {
+    public function generateFromChunk(
+        $chunk,
+        int $questionCount = 5
+    ){
         try {
 
             $openAI = new OpenAIService();
 
             $response = $openAI->generateQuestions(
                 $chunk->content,
-                5
+                $questionCount
+            );
+
+            $response = preg_replace(
+                '/[\x00-\x1F\x7F]/u',
+                '',
+                $response
             );
 
             $decoded = json_decode(
@@ -449,8 +482,6 @@ class AiQuestionGenerationService
                     'grade_id' => $material->grade_id,
 
                     'subject_id' => $material->subject_id,
-
-                    'lesson_id' => $material->lesson_id,
 
                     'question_text' => trim(
                         $item['question']
