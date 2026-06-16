@@ -13,6 +13,8 @@ use App\Services\AiTextCleaningService;
 use App\Services\MaterialTextExtractionService;
 use App\Jobs\GenerateQuestionsFromChunksJob;
 
+use Illuminate\Support\Facades\Storage;
+
 class ProcessMaterialOCR implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
@@ -32,6 +34,8 @@ class ProcessMaterialOCR implements ShouldQueue
      */
     public function handle(): void
     {
+        $tempFile = null;
+
         /*
         |--------------------------------------------------------------------------
         | Update Status
@@ -39,15 +43,8 @@ class ProcessMaterialOCR implements ShouldQueue
         */
 
         $this->material->update([
-
             'processing_status' => 'processing',
         ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | OCR Process
-        |--------------------------------------------------------------------------
-        */
 
         try {
 
@@ -55,14 +52,54 @@ class ProcessMaterialOCR implements ShouldQueue
                 MaterialTextExtractionService::class
             );
 
-            $fullPath = storage_path(
-                'app/public/' . $this->material->file_path
+            /*
+            |--------------------------------------------------------------------------
+            | Download File From R2 To Temporary Location
+            |--------------------------------------------------------------------------
+            */
+
+            $tempFile = storage_path(
+                'app/temp/' .
+                $this->material->id . '_' .
+                time() . '_' .
+                basename($this->material->file_path)
             );
 
-            // Extract Text
-            $text = $extractor->extract($fullPath);
+            if (!file_exists(dirname($tempFile))) {
+
+                mkdir(dirname($tempFile), 0777, true);
+            }
+
+            $fileContents = Storage::disk('s3')->get(
+                $this->material->file_path
+            );
+
+            file_put_contents(
+                $tempFile,
+                $fileContents
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Extract Text
+            |--------------------------------------------------------------------------
+            */
+
+            $text = $extractor->extract($tempFile);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Delete Temporary File
+            |--------------------------------------------------------------------------
+            */
+
+            if (file_exists($tempFile)) {
+
+                unlink($tempFile);
+            }
 
             if (empty($text)) {
+
                 throw new \Exception(
                     'No text extracted from material.'
                 );
@@ -73,11 +110,16 @@ class ProcessMaterialOCR implements ShouldQueue
                 'characters' => mb_strlen($text),
             ]);
 
-            // Clean OCR Text
+            /*
+            |--------------------------------------------------------------------------
+            | Clean OCR Text
+            |--------------------------------------------------------------------------
+            */
+
             $cleaner = new AiTextCleaningService();
+
             $text = $cleaner->clean($text);
 
-            // UTF-8 Cleanup
             $text = mb_convert_encoding(
                 $text,
                 'UTF-8',
@@ -90,13 +132,22 @@ class ProcessMaterialOCR implements ShouldQueue
                 $text
             );
 
-            $text = preg_replace('/[^\PC\s]/u', '', $text);
+            $text = preg_replace(
+                '/[^\PC\s]/u',
+                '',
+                $text
+            );
 
             \Log::info('Cleaned Text Size', [
                 'chars' => mb_strlen($text)
             ]);
 
-            // Save OCR Result
+            /*
+            |--------------------------------------------------------------------------
+            | Save OCR Result
+            |--------------------------------------------------------------------------
+            */
+
             $this->material->update([
                 'extracted_text' => $text,
                 'processing_status' => 'completed',
@@ -105,7 +156,12 @@ class ProcessMaterialOCR implements ShouldQueue
 
             $this->material->refresh();
 
-            // Create Chunks
+            /*
+            |--------------------------------------------------------------------------
+            | Create Chunks
+            |--------------------------------------------------------------------------
+            */
+
             app(\App\Services\MaterialChunkingService::class)
                 ->createChunks($this->material);
 
@@ -114,22 +170,37 @@ class ProcessMaterialOCR implements ShouldQueue
                 'count' => $this->material->chunks()->count()
             ]);
 
-            // Dispatch Question Generation
+            /*
+            |--------------------------------------------------------------------------
+            | Dispatch Question Generation
+            |--------------------------------------------------------------------------
+            */
+
             GenerateQuestionsFromChunksJob::dispatch(
                 $this->material
             );
 
         } catch (\Exception $e) {
 
+            /*
+            |--------------------------------------------------------------------------
+            | Cleanup Temp File
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                $tempFile &&
+                file_exists($tempFile)
+            ) {
+                unlink($tempFile);
+            }
+
             \Log::error('OCR Queue Failed', [
-
                 'material_id' => $this->material->id,
-
                 'error' => $e->getMessage(),
             ]);
 
             $this->material->update([
-
                 'processing_status' => 'failed',
             ]);
         }

@@ -37,7 +37,7 @@ class MaterialController extends Controller
 
     $file = $request->file('file');
 
-    $path = $file->store('materials', 'public');
+    $path = $file->store('materials', 's3');
 
     /*
     |--------------------------------------------------------------------------

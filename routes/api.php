@@ -12,6 +12,19 @@ use App\Http\Controllers\Api\QuizController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\QuestionController;
 
+use Illuminate\Support\Facades\Storage;
+
+
+Route::get('/test-r2', function () {
+
+    Storage::disk('s3')->put(
+        'test.txt',
+        'QuizLanka AI R2 Test'
+    );
+
+    return 'Upload Success';
+});
+
 // API Routes
 Route::prefix('auth')->group(function () {
 
