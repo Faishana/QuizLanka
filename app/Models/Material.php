@@ -15,29 +15,19 @@ class Material extends Model
     protected $fillable = [
 
         'uuid',
-
         'grade_id',
-
         'subject_id',
-
-        'lesson_id',
-
         'uploaded_by',
-
         'title',
 
+        'material_type',
+
         'file_name',
-
         'file_path',
-
         'file_type',
-
         'file_size',
-
         'extracted_text',
-
         'processing_status',
-
         'processed_at',
     ];
 

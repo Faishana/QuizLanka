@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Log;
+
 class MaterialTextExtractionService
 {
     protected $pdfExtractionService;
@@ -29,18 +31,17 @@ class MaterialTextExtractionService
 
         /*
         |--------------------------------------------------------------------------
-        | Empty PDF Text -> OCR
+        | Empty PDF -> OCR
         |--------------------------------------------------------------------------
         */
 
         if (empty(trim($text))) {
 
-            $ocrText = $this->ocrExtractionService
-                ->extract($pdfPath);
+            Log::info('No extractable text found. Using OCR.');
 
-            return $this->cleanText(
-                $ocrText ?? ''
-            );
+            $ocrText = $this->ocrExtractionService->extract($pdfPath);
+
+            return $this->cleanText($ocrText ?? '');
         }
 
         /*
@@ -60,7 +61,7 @@ class MaterialTextExtractionService
             $sample
         );
 
-        \Log::info('Legacy Detection', [
+        Log::info('Legacy Detection', [
 
             'legacy_count' => $legacyCount,
             'sample' => mb_substr($sample, 0, 300)
@@ -69,7 +70,7 @@ class MaterialTextExtractionService
 
         /*
         |--------------------------------------------------------------------------
-        | Valid Unicode Sinhala PDF
+        | Unicode PDF
         |--------------------------------------------------------------------------
         */
 
@@ -78,22 +79,23 @@ class MaterialTextExtractionService
             $legacyCount < 10
         ) {
 
-            return $this->cleanText(
-                $text
-            );
+            Log::info('Unicode PDF detected.');
+
+            return $this->cleanText($text);
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Legacy Sinhala PDF -> OCR
+        | Legacy Sinhala PDF
         |--------------------------------------------------------------------------
         */
 
-        $ocrText = $this->ocrExtractionService
-            ->extract($pdfPath);
+        Log::info('Legacy Sinhala PDF detected. Using converter.');
+
+        $legacyConverter = app(LegacySinhalaConverterService::class);
 
         return $this->cleanText(
-            $ocrText ?? ''
+            $legacyConverter->convert($text)
         );
     }
 

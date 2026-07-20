@@ -10,25 +10,28 @@ class Question extends Model
         'material_id',
         'grade_id',
         'subject_id',
-        'lesson_id',
+        'material_chunk_id',
+        'chunk_order',
         'question_text',
         'question_type',
         'difficulty',
         'correct_answer',
         'explanation',
         'is_ai_generated',
+
         'source_type',
+
+        'paper_year',
+        'paper_name',
+
+        'source_page',
         'status',
+        'created_by' // 👈 Add this if missing
     ];
 
     protected $hidden = [
-        'correct_answer'
+        'correct_answer',
     ];
-    /*
-    |--------------------------------------------------------------------------
-    | Relationships
-    |--------------------------------------------------------------------------
-    */
 
     public function options()
     {
@@ -50,8 +53,8 @@ class Question extends Model
         return $this->belongsTo(Subject::class);
     }
 
-    public function lesson()
+    public function quizAnswers()
     {
-        return $this->belongsTo(Lesson::class);
+        return $this->hasMany(QuizAnswer::class);
     }
 }

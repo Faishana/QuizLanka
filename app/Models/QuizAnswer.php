@@ -10,7 +10,12 @@ class QuizAnswer extends Model
         'quiz_id',
         'question_id',
         'selected_option_id',
+        'correct_option_id',
         'is_correct',
+    ];
+
+    protected $casts = [
+        'is_correct' => 'boolean',
     ];
 
     public function quiz()
@@ -31,4 +36,11 @@ class QuizAnswer extends Model
         );
     }
 
+    public function correctOption()
+    {
+        return $this->belongsTo(
+            QuestionOption::class,
+            'correct_option_id'
+        );
+    }
 }

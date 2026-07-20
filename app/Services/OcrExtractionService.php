@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use thiagoalessio\TesseractOCR\TesseractOCR;
+use Illuminate\Support\Facades\Log;
 
 class OcrExtractionService
 {
@@ -37,99 +38,194 @@ class OcrExtractionService
 
         /*
         |--------------------------------------------------------------------------
-        | Convert PDF To Images Using Poppler
+        | Get PDF Page Count
         |--------------------------------------------------------------------------
         */
 
-        $pdftoppm = 'C:\\poppler\\Library\\bin\\pdftoppm.exe';
+        $pageCount = $this->getPageCount($pdfPath);
 
-        $command =
-            '"' . $pdftoppm . '" ' .
-            '-jpeg -r 200 ' .
-            '"' . $pdfPath . '" "' .
-            $outputDir . '\\page"';
+        if ($pageCount === 0) {
 
-        exec(
-            $command,
-            $output,
-            $resultCode
-        );
-
-        if ($resultCode !== 0) {
-
-            \Log::error(
-                'Poppler conversion failed.'
-            );
+            Log::error('Could not determine PDF page count.');
 
             return null;
         }
 
+        Log::info("PDF has {$pageCount} pages to process.");
+
         /*
         |--------------------------------------------------------------------------
-        | Get Images
+        | Get Poppler Path
         |--------------------------------------------------------------------------
         */
 
-        $images = glob(
-            $outputDir . '/page-*.jpg'
-        );
-
-        sort($images);
-
-        if (empty($images)) {
-
-            \Log::warning(
-                'No OCR images generated.'
-            );
-
-            return null;
-        }
+        $pdftoppm = env('POPPLER_IMAGE_PATH');
 
         /*
         |--------------------------------------------------------------------------
-        | OCR Process
+        | Process Each Page
         |--------------------------------------------------------------------------
         */
 
         $text = '';
 
-       foreach ($images as $image) {
+        for ($page = 1; $page <= $pageCount; $page++) {
 
-        try {
+            Log::info("Processing page {$page}/{$pageCount}");
 
-            $ocr = (new TesseractOCR($image))
-                ->executable(
-                    'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-                )
-                ->lang('sin', 'eng')
-                ->run();
+            /*
+            |--------------------------------------------------------------------------
+            | Convert Single Page to Image
+            |--------------------------------------------------------------------------
+            */
 
-                if (!empty(trim($ocr))) {
-                    $text .= "\n\n" . $ocr;
+            $imagePrefix = $outputDir . '/page';
+
+            $command = sprintf(
+                '%s -f %d -l %d -jpeg -r 150 %s %s',
+                escapeshellarg($pdftoppm),
+                $page,
+                $page,
+                escapeshellarg($pdfPath),
+                escapeshellarg($imagePrefix)
+            );
+
+            exec($command, $output, $resultCode);
+
+            if ($resultCode !== 0) {
+
+                Log::warning("Failed converting page {$page}. Exit code: {$resultCode}");
+
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Find Generated Image
+            |--------------------------------------------------------------------------
+            */
+
+            $images = glob($outputDir . '/page-*.jpg');
+
+            if (empty($images)) {
+
+                Log::warning("No image generated for page {$page}.");
+
+                continue;
+            }
+
+            // Get the newest image or the one matching our page
+            $image = null;
+
+            foreach ($images as $img) {
+
+                // Try to extract page number from filename
+                if (preg_match('/page-(\d+)\.jpg$/', $img, $matches)) {
+
+                    $imgPage = (int)$matches[1];
+
+                    if ($imgPage === $page) {
+
+                        $image = $img;
+
+                        break;
+                    }
                 }
+            }
 
-            } catch (\Exception $e) {
+            // If no match found by page number, use the latest generated image
+            if ($image === null && !empty($images)) {
 
-                if (
-                    str_contains(
-                        $e->getMessage(),
-                        'Empty page'
-                    )
-                ) {
+                usort($images, function($a, $b) {
 
-                    \Log::info(
-                        "Skipped empty page: {$image}"
-                    );
+                    return filemtime($a) - filemtime($b);
+                });
+
+                $image = end($images);
+            }
+
+            if ($image === null || !file_exists($image)) {
+
+                Log::warning("No valid image found for page {$page}.");
+
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | OCR Process
+            |--------------------------------------------------------------------------
+            */
+
+            try {
+
+                $ocr = (new TesseractOCR($image))
+                    ->executable(env('TESSERACT_PATH'))
+                    ->lang('sin', 'eng')
+                    ->psm(6)
+                    ->run();
+
+                /*
+                |--------------------------------------------------------------------------
+                | Skip Almost-Empty Pages
+                |--------------------------------------------------------------------------
+                */
+
+                if (mb_strlen(trim($ocr)) < 30) {
+
+                    Log::info("Skipped page {$page} - too short (only " . mb_strlen(trim($ocr)) . " chars)");
 
                     continue;
                 }
 
-                \Log::warning(
-                    "OCR failed for image {$image}: " .
-                    $e->getMessage()
-                );
+                /*
+                |--------------------------------------------------------------------------
+                | Skip OCR That's Mostly English (Invalid OCR)
+                |--------------------------------------------------------------------------
+                */
 
-                continue;
+                $sinhalaCount = preg_match_all('/[\x{0D80}-\x{0DFF}]/u', $ocr);
+
+                $englishCount = preg_match_all('/[A-Za-z]/', $ocr);
+
+                if ($englishCount > ($sinhalaCount * 5)) {
+
+                    Log::warning("Page {$page} looks like invalid OCR (English: {$englishCount}, Sinhala: {$sinhalaCount}). Skipping.");
+
+                    continue;
+                }
+
+                if (!empty(trim($ocr))) {
+
+                    $text .= "\n\n" . $ocr;
+
+                    Log::info("Successfully extracted text from page {$page}.");
+                }
+
+            } catch (\Exception $e) {
+
+                if (str_contains($e->getMessage(), 'Empty page')) {
+
+                    Log::info("Skipped empty page: {$image}");
+
+                } else {
+
+                    Log::warning(
+                        "OCR failed for page {$page} ({$image}): " .
+                        $e->getMessage()
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Cleanup Current Image
+            |--------------------------------------------------------------------------
+            */
+
+            if (file_exists($image)) {
+
+                unlink($image);
             }
         }
 
@@ -153,20 +249,6 @@ class OcrExtractionService
 
         /*
         |--------------------------------------------------------------------------
-        | Cleanup Temp Images
-        |--------------------------------------------------------------------------
-        */
-
-        foreach ($images as $image) {
-
-            if (file_exists($image)) {
-
-                unlink($image);
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
         | No Text Found
         |--------------------------------------------------------------------------
         */
@@ -183,5 +265,39 @@ class OcrExtractionService
         */
 
         return trim($text);
+    }
+
+    /**
+     * Get the number of pages in a PDF file
+     *
+     * @param string $pdfPath
+     * @return int
+     */
+    private function getPageCount(string $pdfPath): int
+    {
+        $output = [];
+
+        $command = 'pdfinfo ' . escapeshellarg($pdfPath);
+
+        exec($command, $output, $resultCode);
+
+        if ($resultCode !== 0) {
+
+            Log::error('Failed to get PDF info. Command: ' . $command);
+
+            return 0;
+        }
+
+        foreach ($output as $line) {
+
+            if (preg_match('/Pages:\s+(\d+)/', $line, $matches)) {
+
+                return (int)$matches[1];
+            }
+        }
+
+        Log::warning('Could not parse page count from pdfinfo output.');
+
+        return 0;
     }
 }

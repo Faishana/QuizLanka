@@ -10,27 +10,90 @@ class SubjectSeeder extends Seeder
 {
     public function run(): void
     {
-        $grade10 = Grade::where('slug', 'grade-10')->first();
+        $grade11 = Grade::where('slug', 'grade-11')->first();
 
-        Subject::create([
-            'grade_id' => $grade10->id,
-            'name' => 'Science',
-            'slug' => 'science',
-            'color' => '#3B82F6',
-        ]);
+        if (!$grade11) {
+            $this->command->error('Grade 11 not found.');
+            return;
+        }
 
-        Subject::create([
-            'grade_id' => $grade10->id,
-            'name' => 'Mathematics',
-            'slug' => 'mathematics',
-            'color' => '#10B981',
-        ]);
+        $subjects = [
 
-        Subject::create([
-            'grade_id' => $grade10->id,
-            'name' => 'English',
-            'slug' => 'english',
-            'color' => '#F59E0B',
-        ]);
+            [
+                'name' => 'Science',
+                'slug' => 'science',
+                'color' => '#3B82F6',
+            ],
+
+            [
+                'name' => 'Mathematics',
+                'slug' => 'mathematics',
+                'color' => '#10B981',
+            ],
+
+            [
+                'name' => 'English',
+                'slug' => 'english',
+                'color' => '#F59E0B',
+            ],
+
+            [
+                'name' => 'Sinhala',
+                'slug' => 'sinhala',
+                'color' => '#8B5CF6',
+            ],
+
+            [
+                'name' => 'History',
+                'slug' => 'history',
+                'color' => '#EF4444',
+            ],
+
+            [
+                'name' => 'Buddhism',
+                'slug' => 'buddhism',
+                'color' => '#F97316',
+            ],
+
+            [
+                'name' => 'Geography',
+                'slug' => 'geography',
+                'color' => '#06B6D4',
+            ],
+
+            [
+                'name' => 'Health & Physical Education',
+                'slug' => 'health-physical-education',
+                'color' => '#84CC16',
+            ],
+
+            [
+                'name' => 'Information & Communication Technology',
+                'slug' => 'ict',
+                'color' => '#6366F1',
+            ],
+
+            [
+                'name' => 'Civic Education',
+                'slug' => 'civic-education',
+                'color' => '#14B8A6',
+            ],
+        ];
+
+        foreach ($subjects as $subject) {
+
+            Subject::firstOrCreate(
+                [
+                    'grade_id' => $grade11->id,
+                    'slug' => $subject['slug'],
+                ],
+                [
+                    'name' => $subject['name'],
+                    'color' => $subject['color'],
+                ]
+            );
+        }
+
+        $this->command->info('Grade 11 subjects seeded successfully.');
     }
 }

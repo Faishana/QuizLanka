@@ -18,12 +18,6 @@ class GradeSeeder extends Seeder
                 'sort_order' => 1,
             ],
 
-            [
-                'name' => 'Grade 10',
-                'slug' => 'grade-10',
-                'category' => 'ol',
-                'sort_order' => 2,
-            ],
 
             [
                 'name' => 'Grade 11',

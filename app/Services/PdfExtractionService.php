@@ -2,22 +2,56 @@
 
 namespace App\Services;
 
-use Smalot\PdfParser\Parser;
+use Spatie\PdfToText\Pdf;
+use Illuminate\Support\Facades\Log;
 
 class PdfExtractionService
 {
-    public function extract($pdfPath)
+    protected LegacySinhalaConverterService $legacyDetector;
+    protected PdfOcrService $ocrService;
+
+    public function __construct(
+        LegacySinhalaConverterService $legacyDetector,
+        PdfOcrService $ocrService
+    ) {
+        $this->legacyDetector = $legacyDetector;
+        $this->ocrService = $ocrService;
+    }
+
+    public function extract(string $pdfPath): string
     {
-        $parser = new Parser();
+        try {
 
-        $pdf = $parser->parseFile($pdfPath);
+            $text = Pdf::getText(
+                $pdfPath,
+                env('POPPLER_TEXT_PATH')
+            );
 
-        $text = trim($pdf->getText());
+            if (empty(trim($text))) {
 
-        \Log::info('PDF Parser Result', [
-            'chars' => mb_strlen($text)
-        ]);
+                Log::info('pdftotext returned empty. Switching to OCR.');
 
-        return $text;
+                return $this->ocrService->extract($pdfPath);
+            }
+
+            if ($this->legacyDetector->isLegacy($text)) {
+
+                Log::info('Legacy Sinhala detected. Switching to OCR.');
+
+                return $this->ocrService->extract($pdfPath);
+            }
+
+            Log::info('Unicode PDF detected. Using pdftotext.');
+
+            return $text;
+
+        } catch (\Throwable $e) {
+
+            Log::error('PDF Extraction Failed', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return '';
+        }
     }
 }

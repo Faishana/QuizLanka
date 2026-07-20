@@ -24,13 +24,21 @@ class Subject extends Model
         return $this->belongsTo(Grade::class);
     }
 
-    public function lessons(): HasMany
-    {
-        return $this->hasMany(Lesson::class);
-    }
-
     public function questions()
     {
         return $this->hasMany(Question::class);
+    }
+
+    public function materials()
+    {
+        return $this->hasMany(Material::class);
+    }
+
+    public function users()
+    {
+        return $this->belongsToMany(
+            User::class,
+            'user_subjects'
+        )->withTimestamps();
     }
 }

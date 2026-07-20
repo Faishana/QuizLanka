@@ -8,18 +8,24 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-
 use App\Services\AiTextCleaningService;
 use App\Services\MaterialTextExtractionService;
 use App\Jobs\GenerateQuestionsFromChunksJob;
-
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
+
 
 class ProcessMaterialOCR implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $material;
+    public Material $material;
+
+    public $tries = 1;
+
+    public $timeout = 7200;
+
+    public $backoff = 60;
 
     /**
      * Create a new job instance.
@@ -44,10 +50,10 @@ class ProcessMaterialOCR implements ShouldQueue
 
         $this->material->update([
             'processing_status' => 'processing',
+            'error_message' => null,
         ]);
 
         try {
-
             $extractor = app(
                 MaterialTextExtractionService::class
             );
@@ -66,7 +72,6 @@ class ProcessMaterialOCR implements ShouldQueue
             );
 
             if (!file_exists(dirname($tempFile))) {
-
                 mkdir(dirname($tempFile), 0777, true);
             }
 
@@ -93,22 +98,21 @@ class ProcessMaterialOCR implements ShouldQueue
             |--------------------------------------------------------------------------
             */
 
-            if (file_exists($tempFile)) {
-
+            // CHANGE #2: Log temporary file deletion
+            if ($tempFile && file_exists($tempFile)) {
                 unlink($tempFile);
+
+                Log::info('Temporary PDF deleted.', [
+                    'material_id' => $this->material->id,
+                    'file' => $tempFile,
+                ]);
             }
 
             if (empty($text)) {
-
                 throw new \Exception(
                     'No text extracted from material.'
                 );
             }
-
-            \Log::info('Text extracted', [
-                'material_id' => $this->material->id,
-                'characters' => mb_strlen($text),
-            ]);
 
             /*
             |--------------------------------------------------------------------------
@@ -138,37 +142,41 @@ class ProcessMaterialOCR implements ShouldQueue
                 $text
             );
 
-            \Log::info('Cleaned Text Size', [
-                'chars' => mb_strlen($text)
-            ]);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Save OCR Result
-            |--------------------------------------------------------------------------
-            */
-
+            // SAVE TEXT BEFORE CHUNKING
             $this->material->update([
-                'extracted_text' => $text,
-                'processing_status' => 'completed',
-                'processed_at' => now(),
+                'extracted_text' => $text
             ]);
 
-            $this->material->refresh();
+            $material = Material::findOrFail(
+                $this->material->id
+            );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Create Chunks
-            |--------------------------------------------------------------------------
-            */
+            $chunkService = app(
+                \App\Services\MaterialChunkingService::class
+            );
 
-            app(\App\Services\MaterialChunkingService::class)
-                ->createChunks($this->material);
+            $chunksCreated = $chunkService->createChunks(
+                $material
+            );
 
-            \Log::info('Chunks Created', [
+            if ($chunksCreated === 0) {
+                throw new \Exception('No chunks could be created from extracted text');
+            }
+
+            Log::info('Chunks Created', [
                 'material_id' => $this->material->id,
-                'count' => $this->material->chunks()->count()
+                'count' => $chunksCreated
             ]);
+
+            // CHANGE #1: Update status to 'chunked' instead of 'completed'
+            $this->material->update([
+                'processing_status' => 'chunked',
+                'processed_at' => now(),
+                'error_message' => null,
+            ]);
+
+            // CHANGE #3: Refresh the model before dispatching
+            $this->material->refresh();
 
             /*
             |--------------------------------------------------------------------------
@@ -176,33 +184,56 @@ class ProcessMaterialOCR implements ShouldQueue
             |--------------------------------------------------------------------------
             */
 
-            GenerateQuestionsFromChunksJob::dispatch(
-                $this->material
-            );
+            // CHANGED: Dispatch individual chunk jobs instead of a single material job
+            foreach ($material->chunks as $chunk) {
+                GenerateQuestionsFromChunksJob::dispatch(
+                    $chunk
+                )->onQueue('question-generation');
+            }
+
+            Log::info('OCR Job Completed. Chunk jobs dispatched.', [
+                'material_id' => $this->material->id,
+                'chunks' => $material->chunks->count(),
+            ]);
 
         } catch (\Exception $e) {
-
             /*
             |--------------------------------------------------------------------------
             | Cleanup Temp File
             |--------------------------------------------------------------------------
             */
 
-            if (
-                $tempFile &&
-                file_exists($tempFile)
-            ) {
+            // CHANGE #2: Log temporary file deletion in catch block
+            if ($tempFile && file_exists($tempFile)) {
                 unlink($tempFile);
+
+                Log::info('Temporary PDF deleted.', [
+                    'material_id' => $this->material->id,
+                    'file' => $tempFile,
+                ]);
             }
 
-            \Log::error('OCR Queue Failed', [
+            Log::error('OCR Queue Failed', [
                 'material_id' => $this->material->id,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
 
             $this->material->update([
                 'processing_status' => 'failed',
+                'error_message' => $e->getMessage(),
             ]);
+
+            // Re-throw for queue retry
+            throw $e;
         }
+    }
+
+    /**
+     * Determine the time at which the job should timeout.
+     */
+    public function retryUntil(): \DateTime
+    {
+        return now()->addMinutes(30);
     }
 }

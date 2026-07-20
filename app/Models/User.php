@@ -21,6 +21,13 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+
+        'grade_id',
+        'school',
+        'district',
+        'preferred_medium',
+        'target_exam',
+        'profile_image'
     ];
 
     protected $hidden = [
@@ -36,5 +43,23 @@ class User extends Authenticatable
     public function quizzes()
     {
         return $this->hasMany(Quiz::class);
+    }
+
+    public function grade()
+    {
+        return $this->belongsTo(Grade::class);
+    }
+
+    public function subjects()
+    {
+        return $this->belongsToMany(
+            Subject::class,
+            'user_subjects'
+        )->withTimestamps();
+    }
+
+    public function statistics()
+    {
+        return $this->hasOne(UserStatistic::class);
     }
 }

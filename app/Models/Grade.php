@@ -14,6 +14,7 @@ class Grade extends Model
         'category',
         'sort_order',
         'is_active',
+        'created_by' // 👈 Add this
     ];
 
     public function subjects(): HasMany

@@ -16,211 +16,197 @@ use Illuminate\Support\Facades\Log;
 
 class MaterialController extends Controller
 {
-    public function upload(Request $request)
-{
-    $request->validate([
-
-        'grade_id' => 'required|exists:grades,id',
-
-        'subject_id' => 'required|exists:subjects,id',
-
-        'title' => 'required|string|max:255',
-
-        'file' => 'required|file|mimes:pdf,docx,txt|max:102400',
-    ]);
-
-    /*
-    |--------------------------------------------------------------------------
-    | Store File
-    |--------------------------------------------------------------------------
-    */
-
-    $file = $request->file('file');
-
-    $path = $file->store('materials', 's3');
-
-    /*
-    |--------------------------------------------------------------------------
-    | File Extension
-    |--------------------------------------------------------------------------
-    */
-
-    $extension = strtolower(
-        $file->getClientOriginalExtension()
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | TXT Extraction (Immediate)
-    |--------------------------------------------------------------------------
-    */
-
-    $extractedText = null;
-
-    $processingStatus = 'pending';
-
-    if ($extension === 'txt') {
-
-        try {
-
-            $fullPath = storage_path(
-                'app/public/' . $path
-            );
-
-            $extractedText = file_get_contents($fullPath);
-
-            $processingStatus = 'completed';
-
-        } catch (\Exception $e) {
-
-            \Log::error('TXT Extraction Failed', [
-
-                'error' => $e->getMessage(),
-
-                'file' => $path,
-            ]);
-
-            $processingStatus = 'failed';
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Save Material
-    |--------------------------------------------------------------------------
-    */
-
-    $material = Material::create([
-
-        'grade_id' => $request->grade_id,
-
-        'subject_id' => $request->subject_id,
-
-        'uploaded_by' => auth()->id(),
-
-        'title' => $request->title,
-
-        'file_name' => $file->getClientOriginalName(),
-
-        'file_path' => $path,
-
-        'file_type' => $extension,
-
-        'file_size' => $file->getSize(),
-
-        'extracted_text' => $extractedText,
-
-        'processing_status' => $processingStatus,
-    ]);
-
-    /*
-    |--------------------------------------------------------------------------
-    | Dispatch OCR Queue Job
-    |--------------------------------------------------------------------------
-    */
-
-    if ($extension === 'pdf') {
-
-        \App\Jobs\ProcessMaterialOCR::dispatch($material);
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Response
-    |--------------------------------------------------------------------------
-    */
-
-    return response()->json([
-
-        'success' => true,
-
-        'message' => $extension === 'pdf'
-            ? 'Material uploaded. OCR processing started.'
-            : 'Material uploaded successfully',
-
-        'data' => [
-
-            'id' => $material->id,
-
-            'title' => $material->title,
-
-            'file_name' => $material->file_name,
-
-            'processing_status' => $material->processing_status,
-        ]
-    ]);
-}
     /**
-     * Materials List
+     * Upload Material
      */
-    public function index()
+    public function upload(Request $request)
+    {
+        $request->validate([
+            'grade_id' => 'required|exists:grades,id',
+            'subject_id' => 'required|exists:subjects,id',
+            'title' => 'required|string|max:255',
+            'material_type' => 'required|in:lesson,past_paper',
+            'file' => 'required|file|mimes:pdf,docx,txt|max:102400',
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Store File
+        |--------------------------------------------------------------------------
+        */
+
+        $file = $request->file('file');
+        $path = $file->store('materials', 's3');
+
+        /*
+        |--------------------------------------------------------------------------
+        | File Extension
+        |--------------------------------------------------------------------------
+        */
+
+        $extension = strtolower($file->getClientOriginalExtension());
+
+        /*
+        |--------------------------------------------------------------------------
+        | TXT Extraction (Immediate)
+        |--------------------------------------------------------------------------
+        */
+
+        $extractedText = null;
+        $processingStatus = 'pending';
+
+        if ($extension === 'txt') {
+            try {
+                $fullPath = storage_path('app/public/' . $path);
+                $extractedText = file_get_contents($fullPath);
+                $processingStatus = 'completed';
+            } catch (\Exception $e) {
+                Log::error('TXT Extraction Failed', [
+                    'error' => $e->getMessage(),
+                    'file' => $path,
+                ]);
+                $processingStatus = 'failed';
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Save Material
+        |--------------------------------------------------------------------------
+        */
+
+        $material = Material::create([
+            'grade_id' => $request->grade_id,
+            'subject_id' => $request->subject_id,
+            'uploaded_by' => auth()->id(), // 👈 Already exists - GOOD!
+            'title' => $request->title,
+            'material_type' => $request->material_type,
+            'file_name' => $file->getClientOriginalName(),
+            'file_path' => $path,
+            'file_type' => $extension,
+            'file_size' => $file->getSize(),
+            'extracted_text' => $extractedText,
+            'processing_status' => $processingStatus,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Dispatch Processing Job
+        |--------------------------------------------------------------------------
+        */
+
+        if ($extension === 'pdf') {
+
+            try {
+
+                if ($material->material_type === 'past_paper') {
+
+                    Log::info('Dispatching Past Paper Job', ['material_id' => $material->id]);
+                    \App\Jobs\GeneratePastPaperQuestionsJob::dispatch($material);
+
+                } else {
+
+                    Log::info('Dispatching Lesson OCR Job', ['material_id' => $material->id]);
+                    \App\Jobs\ProcessMaterialOCR::dispatch($material);
+
+                }
+
+            } catch (\Throwable $e) {
+
+                Log::error('JOB DISPATCH FAILED', [
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Job dispatch failed: '.$e->getMessage(),
+                ], 500);
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Response
+        |--------------------------------------------------------------------------
+        */
+
+        return response()->json([
+            'success' => true,
+            'message' => $extension === 'pdf'
+                ? 'Material uploaded. OCR processing started.'
+                : 'Material uploaded successfully',
+            'data' => [
+                'id' => $material->id,
+                'title' => $material->title,
+                'file_name' => $material->file_name,
+                'processing_status' => $material->processing_status,
+            ]
+        ]);
+    }
+
+    /**
+     * Materials List (Only Admin's Own Materials)
+     */
+    public function index(Request $request) // 👈 Added Request
     {
         $materials = Material::withCount('questions')
+            ->where('uploaded_by', $request->user()->id) // 👈 Filter
             ->latest()
             ->get();
 
         return response()->json([
-
             'success' => true,
-
             'data' => $materials,
         ]);
     }
 
     /**
-     * Material Details
+     * Material Details (Only Admin's Own Material)
      */
-    public function show($id)
+    public function show(Request $request, $id) // 👈 Added Request
     {
-        $material = Material::with([
-            'grade',
-            'subject',
-            'uploader'
-        ])->findOrFail($id);
+        $material = Material::where('uploaded_by', $request->user()->id) // 👈 Filter
+            ->with([
+                'grade',
+                'subject',
+                'uploader'
+            ])
+            ->findOrFail($id);
 
         return response()->json([
-
             'success' => true,
-
             'data' => [
-
                 'id' => $material->id,
-
                 'title' => $material->title,
-
                 'file_name' => $material->file_name,
-
                 'file_type' => $material->file_type,
-
                 'file_size' => $material->file_size,
-
                 'processing_status' => $material->processing_status,
-
                 'extracted_text_preview' => mb_substr(
                     $material->extracted_text,
                     0,
                     3000
                 ),
-
                 'grade' => $material->grade?->name,
-
                 'subject' => $material->subject?->name,
-
                 'uploaded_by' => $material->uploader?->name,
-
                 'created_at' => $material->created_at,
             ]
         ]);
     }
 
-    public function generateQuestions(int $id): JsonResponse
+    /**
+     * Generate Questions (Only Admin's Own Material)
+     */
+    public function generateQuestions(Request $request, int $id): JsonResponse // 👈 Added Request
     {
         try {
-
-            $material = Material::findOrFail($id);
+            $material = Material::where('uploaded_by', auth()->id()) // 👈 Filter
+                ->findOrFail($id);
 
             if (empty($material->extracted_text)) {
-
                 return response()->json([
                     'success' => false,
                     'message' => 'Material text has not been extracted yet.'
@@ -233,10 +219,7 @@ class MaterialController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            Question::where(
-                'material_id',
-                $material->id
-            )->delete();
+            Question::where('material_id', $material->id)->delete();
 
             /*
             |--------------------------------------------------------------------------
@@ -245,7 +228,6 @@ class MaterialController extends Controller
             */
 
             $aiService = new AiQuestionGenerationService();
-
             $result = $aiService->generate($material);
 
             /*
@@ -254,10 +236,7 @@ class MaterialController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            $totalQuestions = Question::where(
-                'material_id',
-                $material->id
-            )->count();
+            $totalQuestions = Question::where('material_id', $material->id)->count();
 
             $fileDeleted = false;
 
@@ -268,30 +247,22 @@ class MaterialController extends Controller
             */
 
             if ($result && $totalQuestions > 0) {
-
                 $material->update([
                     'questions_generated_at' => now(),
                     'processing_status' => 'completed'
                 ]);
 
-                \Log::info('Delete Check', [
+                Log::info('Delete Check', [
                     'material_id' => $material->id,
                     'path' => $material->file_path,
-                    'exists' => Storage::disk('public')->exists(
-                        $material->file_path
-                    )
+                    'exists' => Storage::disk('public')->exists($material->file_path)
                 ]);
 
                 if (
                     !empty($material->file_path) &&
-                    Storage::disk('public')->exists(
-                        $material->file_path
-                    )
+                    Storage::disk('public')->exists($material->file_path)
                 ) {
-
-                    Storage::disk('public')->delete(
-                        $material->file_path
-                    );
+                    Storage::disk('public')->delete($material->file_path);
 
                     $material->update([
                         'file_path' => null,
@@ -301,7 +272,7 @@ class MaterialController extends Controller
 
                     $fileDeleted = true;
 
-                    \Log::info('Source PDF Deleted', [
+                    Log::info('Source PDF Deleted', [
                         'material_id' => $material->id
                     ]);
                 }
@@ -318,7 +289,6 @@ class MaterialController extends Controller
             ]);
 
         } catch (\Exception $e) {
-
             Log::error('Question Generation Failed', [
                 'material_id' => $id,
                 'error' => $e->getMessage()
@@ -332,13 +302,14 @@ class MaterialController extends Controller
         }
     }
 
- /**
-     * Update the specified material.
+    /**
+     * Update Material (Only Admin's Own Material)
      */
     public function update(Request $request, $id)
     {
         try {
-            $material = Material::findOrFail($id);
+            $material = Material::where('uploaded_by', $request->user()->id) // 👈 Filter
+                ->findOrFail($id);
 
             $validated = $request->validate([
                 'title' => 'sometimes|required|string|max:255',
@@ -375,41 +346,35 @@ class MaterialController extends Controller
     }
 
     /**
-     * Remove the specified material.
+     * Delete Material (Only Admin's Own Material)
      */
-    public function destroy($id)
-{
-    try {
+    public function destroy(Request $request, $id) // 👈 Added Request
+    {
+        try {
+            $material = Material::where('uploaded_by', $request->user()->id) // 👈 Filter
+                ->findOrFail($id);
 
-        $material = Material::findOrFail($id);
+            Question::where('material_id', $material->id)->delete();
 
-        Question::where(
-            'material_id',
-            $material->id
-        )->delete();
+            if (
+                $material->file_path &&
+                Storage::disk('public')->exists($material->file_path)
+            ) {
+                Storage::disk('public')->delete($material->file_path);
+            }
 
-        if (
-            $material->file_path &&
-            Storage::disk('public')->exists($material->file_path)
-        ) {
-            Storage::disk('public')->delete(
-                $material->file_path
-            );
+            $material->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Material deleted successfully'
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
         }
-
-        $material->delete();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Material deleted successfully'
-        ]);
-
-    } catch (\Exception $e) {
-
-        return response()->json([
-            'success' => false,
-            'message' => $e->getMessage()
-        ], 500);
     }
-}
 }

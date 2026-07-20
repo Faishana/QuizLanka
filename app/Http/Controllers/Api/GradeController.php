@@ -9,12 +9,10 @@ use Illuminate\Support\Str;
 
 class GradeController extends Controller
 {
-    /**
-     * List Grades
-     */
     public function index()
     {
-        $grades = Grade::orderBy('sort_order')->get();
+        $grades = Grade::orderBy('sort_order')
+            ->get();
 
         return response()->json([
             'success' => true,
@@ -29,6 +27,7 @@ class GradeController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|string|max:255',
+            'category' => 'nullable|string|max:255',
             'sort_order' => 'nullable|integer',
             'is_active' => 'nullable|boolean'
         ]);
@@ -39,6 +38,7 @@ class GradeController extends Controller
             'category' => $validated['category'] ?? null,
             'sort_order' => $validated['sort_order'] ?? 0,
             'is_active' => $validated['is_active'] ?? true,
+            'created_by' => $request->user()->id,
         ]);
 
         return response()->json([
@@ -49,11 +49,12 @@ class GradeController extends Controller
     }
 
     /**
-     * Show Grade
+     * Show Grade (Only Admin's Own Grade)
      */
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $grade = Grade::findOrFail($id);
+        $grade = Grade::where('created_by', $request->user()->id)
+            ->findOrFail($id);
 
         return response()->json([
             'success' => true,
@@ -61,12 +62,13 @@ class GradeController extends Controller
         ]);
     }
 
-   /**
-     * Update Grade
+    /**
+     * Update Grade (Only Admin's Own Grade)
      */
     public function update(Request $request, $id)
     {
-        $grade = Grade::findOrFail($id);
+        $grade = Grade::where('created_by', $request->user()->id)
+            ->findOrFail($id);
 
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
@@ -87,18 +89,32 @@ class GradeController extends Controller
             'data' => $grade->fresh()
         ]);
     }
+
     /**
-     * Delete Grade
+     * Delete Grade (Only Admin's Own Grade)
      */
-    public function destroy($id)
+    public function destroy(Request $request, $id)
     {
-        $grade = Grade::findOrFail($id);
+        $grade = Grade::where('created_by', $request->user()->id)
+            ->findOrFail($id);
 
         $grade->delete();
 
         return response()->json([
             'success' => true,
             'message' => 'Grade deleted successfully'
+        ]);
+    }
+
+    public function publicGrades()
+    {
+        $grades = Grade::where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $grades,
         ]);
     }
 }

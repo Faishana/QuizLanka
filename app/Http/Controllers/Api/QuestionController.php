@@ -9,6 +9,9 @@ use App\Models\QuestionOption;
 
 class QuestionController extends Controller
 {
+    /**
+     * List Questions (Only Admin's Own Questions)
+     */
     public function index(Request $request)
     {
         $query = Question::with([
@@ -17,7 +20,6 @@ class QuestionController extends Controller
             'material:id,title',
             'options'
         ]);
-
         /*
         |--------------------------------------------------------------------------
         | Filters
@@ -25,32 +27,19 @@ class QuestionController extends Controller
         */
 
         if ($request->filled('search')) {
-            $query->where(
-                'question_text',
-                'like',
-                '%' . $request->search . '%'
-            );
+            $query->where('question_text', 'like', '%' . $request->search . '%');
         }
 
         if ($request->filled('grade_id')) {
-            $query->where(
-                'grade_id',
-                $request->grade_id
-            );
+            $query->where('grade_id', $request->grade_id);
         }
 
         if ($request->filled('subject_id')) {
-            $query->where(
-                'subject_id',
-                $request->subject_id
-            );
+            $query->where('subject_id', $request->subject_id);
         }
 
         if ($request->filled('difficulty')) {
-            $query->where(
-                'difficulty',
-                $request->difficulty
-            );
+            $query->where('difficulty', $request->difficulty);
         }
 
         /*
@@ -59,30 +48,11 @@ class QuestionController extends Controller
         |--------------------------------------------------------------------------
         */
 
-        $allowedSorts = [
-            'id',
-            'difficulty',
-            'created_at',
-            'question_text'
-        ];
+        $allowedSorts = ['id', 'difficulty', 'created_at', 'question_text'];
 
-        if (
-            $request->filled('sort_by') &&
-            in_array($request->sort_by, [
-                'id',
-                'question_text',
-                'difficulty',
-                'created_at'
-            ])
-        ) {
-
-            $query->orderBy(
-                $request->sort_by,
-                $request->get('sort_order', 'desc')
-            );
-
+        if ($request->filled('sort_by') && in_array($request->sort_by, $allowedSorts)) {
+            $query->orderBy($request->sort_by, $request->get('sort_order', 'desc'));
         } else {
-
             $query->orderBy('id', 'asc');
         }
 
@@ -92,9 +62,7 @@ class QuestionController extends Controller
         |--------------------------------------------------------------------------
         */
 
-        $questions = $query->paginate(
-            $request->get('per_page', 20)
-        );
+        $questions = $query->paginate($request->get('per_page', 20));
 
         /*
         |--------------------------------------------------------------------------
@@ -103,16 +71,8 @@ class QuestionController extends Controller
         */
 
         $questions->getCollection()->transform(function ($question) {
-
-            $correctOption = $question->options
-                ->firstWhere(
-                    'option_key',
-                    $question->correct_answer
-                );
-
-            $question->correct_option_text =
-                $correctOption?->option_text;
-
+            $correctOption = $question->options->firstWhere('option_key', $question->correct_answer);
+            $question->correct_option_text = $correctOption?->option_text;
             return $question;
         });
 
@@ -122,23 +82,22 @@ class QuestionController extends Controller
         ]);
     }
 
-    public function show(Question $question)
+    /**
+     * Show Question (Only Admin's Own Question)
+     */
+    public function show(Request $request, $id)
     {
-        $question->load([
-            'grade:id,name',
-            'subject:id,name',
-            'material:id,title',
-            'options'
-        ]);
+        $question = Question::where('created_by', $request->user()->id)
+            ->with([
+                'grade:id,name',
+                'subject:id,name',
+                'material:id,title',
+                'options'
+            ])
+            ->findOrFail($id);
 
-        $correctOption = $question->options
-            ->firstWhere(
-                'option_key',
-                $question->correct_answer
-            );
-
-        $question->correct_option_text =
-            $correctOption?->option_text;
+        $correctOption = $question->options->firstWhere('option_key', $question->correct_answer);
+        $question->correct_option_text = $correctOption?->option_text;
 
         return response()->json([
             'success' => true,
@@ -146,10 +105,14 @@ class QuestionController extends Controller
         ]);
     }
 
-    public function update(
-        Request $request,
-        Question $question
-    ) {
+    /**
+     * Update Question (Only Admin's Own Question)
+     */
+    public function update(Request $request, $id)
+    {
+        $question = Question::where('created_by', $request->user()->id)
+            ->findOrFail($id);
+
         $validated = $request->validate([
             'question_text' => 'required|string',
             'correct_answer' => 'required|string|max:10',
@@ -160,38 +123,30 @@ class QuestionController extends Controller
         $question->update($validated);
 
         if ($request->has('options')) {
-
             foreach ($request->options as $option) {
-
-                QuestionOption::where(
-                    'question_id',
-                    $question->id
-                )
-                ->where(
-                    'id',
-                    $option['id']
-                )
-                ->update([
-                    'option_text' =>
-                        $option['option_text']
-                ]);
+                QuestionOption::where('question_id', $question->id)
+                    ->where('id', $option['id'])
+                    ->update([
+                        'option_text' => $option['option_text']
+                    ]);
             }
         }
 
         return response()->json([
             'success' => true,
             'message' => 'Question updated successfully',
-            'data' => $question->fresh([
-                'grade',
-                'subject',
-                'options'
-            ])
+            'data' => $question->fresh(['grade', 'subject', 'options'])
         ]);
     }
 
-    public function destroy(
-        Question $question
-    ) {
+    /**
+     * Delete Question (Only Admin's Own Question)
+     */
+    public function destroy(Request $request, $id)
+    {
+        $question = Question::where('created_by', $request->user()->id)
+            ->findOrFail($id);
+
         $question->delete();
 
         return response()->json([

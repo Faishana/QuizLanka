@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\Subject;
+use App\Models\Grade;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Str;
@@ -10,11 +11,12 @@ use Illuminate\Support\Str;
 class SubjectController extends Controller
 {
     /**
-     * All Subjects
+     * All Subjects (Only Admin's Own Subjects)
      */
-    public function index()
+    public function index(Request $request)
     {
-        $subjects = Subject::orderBy('name')->get();
+        $subjects = Subject::orderBy('sort_order')
+        ->get();
 
         return response()->json([
             'success' => true,
@@ -23,10 +25,12 @@ class SubjectController extends Controller
     }
 
     /**
-     * Subjects By Grade
+     * Subjects By Grade (Only Admin's Own Subjects)
      */
-    public function byGrade($gradeId)
+    public function byGrade(Request $request, $gradeId)
     {
+        $grade = Grade::findOrFail($gradeId);
+
         $subjects = Subject::where('grade_id', $gradeId)
             ->where('is_active', true)
             ->orderBy('sort_order')
@@ -35,26 +39,6 @@ class SubjectController extends Controller
         return response()->json([
             'success' => true,
             'data' => $subjects,
-        ]);
-    }
-
-        /**
-        * Lessons By Subject
-        */
-
-    public function bySubject($subjectId)
-    {
-        $lessons = Lesson::where(
-                'subject_id',
-                $subjectId
-            )
-            ->where('is_active', true)
-            ->orderBy('sort_order')
-            ->get();
-
-        return response()->json([
-            'success' => true,
-            'data' => $lessons
         ]);
     }
 
@@ -70,24 +54,33 @@ class SubjectController extends Controller
             'description' => 'nullable|string',
         ]);
 
-        $subject = Subject::create([
-            'grade_id' => $validated['grade_id'],
-            'name' => $validated['name'],
-            'slug' => Str::slug($validated['name']),
-            'color' => $validated['color'] ?? '#3B82F6',
-            'description' => $validated['description'] ?? null,
-            'is_active' => true,
-        ]);
+        $grade = Grade::findOrFail($validated['grade_id']);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Subject created successfully.',
-            'data' => $subject,
-        ], 201);
+       try {
+            $subject = Subject::create([
+                'grade_id' => $grade->id,
+                'name' => $validated['name'],
+                'slug' => Str::slug($validated['name']),
+                'color' => $validated['color'] ?? '#3B82F6',
+                'description' => $validated['description'] ?? null,
+                'is_active' => true,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'data' => $subject
+            ], 201);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**
-     * Update Subject
+     * Update Subject (Only Admin's Own Subject)
      */
     public function update(Request $request, $id)
     {
@@ -101,8 +94,10 @@ class SubjectController extends Controller
             'is_active' => 'nullable|boolean',
         ]);
 
+        $grade = Grade::findOrFail($validated['grade_id']);
+
         $subject->update([
-            'grade_id' => $validated['grade_id'],
+            'grade_id' => $grade->id,
             'name' => $validated['name'],
             'slug' => Str::slug($validated['name']),
             'color' => $validated['color'] ?? $subject->color,
@@ -118,9 +113,9 @@ class SubjectController extends Controller
     }
 
     /**
-     * Delete Subject
+     * Delete Subject (Only Admin's Own Subject)
      */
-    public function destroy($id)
+    public function destroy(Request $request, $id)
     {
         $subject = Subject::findOrFail($id);
 
