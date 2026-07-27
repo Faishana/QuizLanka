@@ -50,6 +50,7 @@ Route::get('/test-r2', function () {
 */
 
 Route::get('/public/grades', [GradeController::class, 'publicGrades']);
+Route::get('/public/subjects', [SubjectController::class, 'publicSubjects']);
 
 /*
 |--------------------------------------------------------------------------

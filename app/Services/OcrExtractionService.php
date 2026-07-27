@@ -44,6 +44,10 @@ class OcrExtractionService
 
         $pageCount = $this->getPageCount($pdfPath);
 
+        Log::info('Detected page count', [
+            'pages' => $pageCount
+        ]);
+
         if ($pageCount === 0) {
 
             Log::error('Could not determine PDF page count.');
@@ -90,7 +94,15 @@ class OcrExtractionService
                 escapeshellarg($imagePrefix)
             );
 
+            Log::info("Page {$page}: Starting pdftoppm", [
+                'command' => $command
+            ]);
+
             exec($command, $output, $resultCode);
+
+            Log::info("Page {$page}: Finished pdftoppm", [
+                'exit_code' => $resultCode
+            ]);
 
             if ($resultCode !== 0) {
 
@@ -159,11 +171,19 @@ class OcrExtractionService
 
             try {
 
+                Log::info("Page {$page}: Starting Tesseract", [
+                    'image' => $image
+                ]);
+
                 $ocr = (new TesseractOCR($image))
                     ->executable(env('TESSERACT_PATH'))
                     ->lang('sin', 'eng')
                     ->psm(6)
                     ->run();
+
+                Log::info("Page {$page}: Finished Tesseract", [
+                    'characters' => mb_strlen($ocr)
+                ]);
 
                 /*
                 |--------------------------------------------------------------------------
@@ -264,6 +284,10 @@ class OcrExtractionService
         |--------------------------------------------------------------------------
         */
 
+        Log::info('OCR extraction completed', [
+            'length' => mb_strlen($text)
+        ]);
+
         return trim($text);
     }
 
@@ -276,10 +300,21 @@ class OcrExtractionService
     private function getPageCount(string $pdfPath): int
     {
         $output = [];
+        $resultCode = 0;
 
-        $command = 'pdfinfo ' . escapeshellarg($pdfPath);
+        $pdfinfo = env('PDFINFO_PATH', '/usr/bin/pdfinfo');
+
+        $command = escapeshellarg($pdfinfo) . ' ' . escapeshellarg($pdfPath);
+
+        Log::info('Running pdfinfo', [
+            'command' => $command
+        ]);
 
         exec($command, $output, $resultCode);
+
+        Log::info('Finished pdfinfo', [
+            'exit_code' => $resultCode
+        ]);
 
         if ($resultCode !== 0) {
 

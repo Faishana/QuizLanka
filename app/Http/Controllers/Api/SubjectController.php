@@ -126,4 +126,17 @@ class SubjectController extends Controller
             'message' => 'Subject deleted successfully.',
         ]);
     }
+
+    public function publicSubjects()
+    {
+        $subjects = Subject::where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $subjects,
+        ]);
+    }
+    
 }

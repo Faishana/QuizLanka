@@ -78,7 +78,7 @@ class MaterialController extends Controller
         $material = Material::create([
             'grade_id' => $request->grade_id,
             'subject_id' => $request->subject_id,
-            'uploaded_by' => auth()->id(), // 👈 Already exists - GOOD!
+            'uploaded_by' => auth()->id(), // 👈 Keep this
             'title' => $request->title,
             'material_type' => $request->material_type,
             'file_name' => $file->getClientOriginalName(),
@@ -147,12 +147,16 @@ class MaterialController extends Controller
     }
 
     /**
-     * Materials List (Only Admin's Own Materials)
+     * Materials List - All Materials (No User Filter)
      */
-    public function index(Request $request) // 👈 Added Request
+    public function index(Request $request)
     {
-        $materials = Material::withCount('questions')
-            ->where('uploaded_by', $request->user()->id) // 👈 Filter
+        $materials = Material::with([
+                'grade',
+                'subject',
+                'uploader'
+            ])
+            ->withCount('questions')
             ->latest()
             ->get();
 
@@ -163,12 +167,11 @@ class MaterialController extends Controller
     }
 
     /**
-     * Material Details (Only Admin's Own Material)
+     * Material Details - Any Material (No User Filter)
      */
-    public function show(Request $request, $id) // 👈 Added Request
+    public function show(Request $request, $id)
     {
-        $material = Material::where('uploaded_by', $request->user()->id) // 👈 Filter
-            ->with([
+        $material = Material::with([
                 'grade',
                 'subject',
                 'uploader'
@@ -198,13 +201,12 @@ class MaterialController extends Controller
     }
 
     /**
-     * Generate Questions (Only Admin's Own Material)
+     * Generate Questions - Any Material (No User Filter)
      */
-    public function generateQuestions(Request $request, int $id): JsonResponse // 👈 Added Request
+    public function generateQuestions(Request $request, int $id): JsonResponse
     {
         try {
-            $material = Material::where('uploaded_by', auth()->id()) // 👈 Filter
-                ->findOrFail($id);
+            $material = Material::findOrFail($id);
 
             if (empty($material->extracted_text)) {
                 return response()->json([
@@ -303,13 +305,12 @@ class MaterialController extends Controller
     }
 
     /**
-     * Update Material (Only Admin's Own Material)
+     * Update Material - Any Material (No User Filter)
      */
     public function update(Request $request, $id)
     {
         try {
-            $material = Material::where('uploaded_by', $request->user()->id) // 👈 Filter
-                ->findOrFail($id);
+            $material = Material::findOrFail($id);
 
             $validated = $request->validate([
                 'title' => 'sometimes|required|string|max:255',
@@ -346,13 +347,12 @@ class MaterialController extends Controller
     }
 
     /**
-     * Delete Material (Only Admin's Own Material)
+     * Delete Material - Any Material (No User Filter)
      */
-    public function destroy(Request $request, $id) // 👈 Added Request
+    public function destroy(Request $request, $id)
     {
         try {
-            $material = Material::where('uploaded_by', $request->user()->id) // 👈 Filter
-                ->findOrFail($id);
+            $material = Material::findOrFail($id);
 
             Question::where('material_id', $material->id)->delete();
 
