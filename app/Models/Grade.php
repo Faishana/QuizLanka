@@ -17,8 +17,11 @@ class Grade extends Model
         'created_by' // 👈 Add this
     ];
 
-    public function subjects(): HasMany
+    public function subjects()
     {
-        return $this->hasMany(Subject::class);
+        return $this->belongsToMany(
+            Subject::class,
+            'grade_subjects'
+        )->withTimestamps();
     }
 }

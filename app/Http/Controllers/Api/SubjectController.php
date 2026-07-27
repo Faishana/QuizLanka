@@ -31,7 +31,8 @@ class SubjectController extends Controller
     {
         $grade = Grade::findOrFail($gradeId);
 
-        $subjects = Subject::where('grade_id', $gradeId)
+        // ✅ Changed to use many-to-many relationship
+        $subjects = $grade->subjects()
             ->where('is_active', true)
             ->orderBy('sort_order')
             ->get();
@@ -54,28 +55,40 @@ class SubjectController extends Controller
             'description' => 'nullable|string',
         ]);
 
-        $grade = Grade::findOrFail($validated['grade_id']);
+        try {
 
-       try {
-            $subject = Subject::create([
-                'grade_id' => $grade->id,
-                'name' => $validated['name'],
-                'slug' => Str::slug($validated['name']),
-                'color' => $validated['color'] ?? '#3B82F6',
-                'description' => $validated['description'] ?? null,
-                'is_active' => true,
+            // Create subject only once
+            $subject = Subject::firstOrCreate(
+                [
+                    'slug' => Str::slug($validated['name']),
+                ],
+                [
+                    'name' => $validated['name'],
+                    'color' => $validated['color'] ?? '#3B82F6',
+                    'description' => $validated['description'] ?? null,
+                    'is_active' => true,
+                ]
+            );
+
+            // Attach subject to grade
+            $grade = Grade::findOrFail($validated['grade_id']);
+
+            $grade->subjects()->syncWithoutDetaching([
+                $subject->id,
             ]);
 
             return response()->json([
                 'success' => true,
-                'data' => $subject
+                'data' => $subject,
             ], 201);
 
         } catch (\Exception $e) {
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
             ], 500);
+
         }
     }
 
@@ -94,16 +107,18 @@ class SubjectController extends Controller
             'is_active' => 'nullable|boolean',
         ]);
 
-        $grade = Grade::findOrFail($validated['grade_id']);
-
+        // ✅ Updated to remove grade_id from subject update
         $subject->update([
-            'grade_id' => $grade->id,
             'name' => $validated['name'],
             'slug' => Str::slug($validated['name']),
             'color' => $validated['color'] ?? $subject->color,
             'description' => $validated['description'] ?? null,
             'is_active' => $validated['is_active'] ?? true,
         ]);
+
+        // ✅ Sync the grade relationship
+        $grade = Grade::findOrFail($validated['grade_id']);
+        $grade->subjects()->syncWithoutDetaching([$subject->id]);
 
         return response()->json([
             'success' => true,
@@ -138,5 +153,5 @@ class SubjectController extends Controller
             'data' => $subjects,
         ]);
     }
-    
+
 }

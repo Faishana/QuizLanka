@@ -19,9 +19,12 @@ class Subject extends Model
         'is_active',
     ];
 
-    public function grade(): BelongsTo
+    public function grades()
     {
-        return $this->belongsTo(Grade::class);
+        return $this->belongsToMany(
+            Grade::class,
+            'grade_subjects'
+        )->withTimestamps();
     }
 
     public function questions()
