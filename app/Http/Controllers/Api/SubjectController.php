@@ -7,20 +7,40 @@ use App\Models\Grade;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Storage;
 
 class SubjectController extends Controller
 {
+    /**
+     * Transform subject to include full image URL from R2 (via S3 disk)
+     */
+    private function transformSubject(Subject $subject)
+    {
+        return [
+            'id' => $subject->id,
+            'name' => $subject->name,
+            'slug' => $subject->slug,
+            'icon' => $subject->icon
+                ? Storage::disk('s3')->url($subject->icon)
+                : null,
+            'color' => $subject->color,
+            'is_active' => $subject->is_active,
+            'sort_order' => $subject->sort_order,
+            'created_at' => $subject->created_at,
+            'updated_at' => $subject->updated_at,
+        ];
+    }
+
     /**
      * All Subjects (Only Admin's Own Subjects)
      */
     public function index(Request $request)
     {
-        $subjects = Subject::orderBy('sort_order')
-        ->get();
+        $subjects = Subject::orderBy('sort_order')->get();
 
         return response()->json([
             'success' => true,
-            'data' => $subjects,
+            'data' => $subjects->map(fn ($subject) => $this->transformSubject($subject)),
         ]);
     }
 
@@ -31,7 +51,7 @@ class SubjectController extends Controller
     {
         $grade = Grade::findOrFail($gradeId);
 
-        // ✅ Changed to use many-to-many relationship
+        // Changed to use many-to-many relationship
         $subjects = $grade->subjects()
             ->where('is_active', true)
             ->orderBy('sort_order')
@@ -39,7 +59,7 @@ class SubjectController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $subjects,
+            'data' => $subjects->map(fn ($subject) => $this->transformSubject($subject)),
         ]);
     }
 
@@ -52,23 +72,32 @@ class SubjectController extends Controller
             'grade_id' => 'required|exists:grades,id',
             'name' => 'required|string|max:255',
             'color' => 'nullable|string',
-            'description' => 'nullable|string',
+            'icon' => 'nullable|image|mimes:png,jpg,jpeg,webp,svg|max:2048',
         ]);
 
         try {
+            // Handle icon upload to S3 (Cloudflare R2)
+            $iconPath = null;
 
-            // Create subject only once
-            $subject = Subject::firstOrCreate(
-                [
-                    'slug' => Str::slug($validated['name']),
-                ],
-                [
-                    'name' => $validated['name'],
-                    'color' => $validated['color'] ?? '#3B82F6',
-                    'description' => $validated['description'] ?? null,
-                    'is_active' => true,
-                ]
-            );
+            if ($request->hasFile('icon')) {
+                $iconPath = $request->file('icon')->store('subjects', 's3');
+            }
+
+            // Use firstOrNew instead of firstOrCreate to allow icon updates
+            $subject = Subject::firstOrNew([
+                'slug' => Str::slug($validated['name']),
+            ]);
+
+            $subject->name = $validated['name'];
+            $subject->color = $validated['color'] ?? '#3B82F6';
+            $subject->is_active = true;
+
+            // Only update icon if a new one was uploaded
+            if ($iconPath) {
+                $subject->icon = $iconPath;
+            }
+
+            $subject->save();
 
             // Attach subject to grade
             $grade = Grade::findOrFail($validated['grade_id']);
@@ -79,7 +108,7 @@ class SubjectController extends Controller
 
             return response()->json([
                 'success' => true,
-                'data' => $subject,
+                'data' => $this->transformSubject($subject->fresh()),
             ], 201);
 
         } catch (\Exception $e) {
@@ -103,27 +132,39 @@ class SubjectController extends Controller
             'grade_id' => 'required|exists:grades,id',
             'name' => 'required|string|max:255',
             'color' => 'nullable|string',
-            'description' => 'nullable|string',
+            'icon' => 'nullable|image|mimes:png,jpg,jpeg,webp,svg|max:2048',
             'is_active' => 'nullable|boolean',
         ]);
 
-        // ✅ Updated to remove grade_id from subject update
+        // Handle icon upload to S3 (Cloudflare R2)
+        $iconPath = $subject->icon;
+
+        if ($request->hasFile('icon')) {
+            // Delete old icon from S3 if exists
+            if ($subject->icon && Storage::disk('s3')->exists($subject->icon)) {
+                Storage::disk('s3')->delete($subject->icon);
+            }
+
+            $iconPath = $request->file('icon')->store('subjects', 's3');
+        }
+
+        // Updated to remove grade_id from subject update
         $subject->update([
             'name' => $validated['name'],
             'slug' => Str::slug($validated['name']),
             'color' => $validated['color'] ?? $subject->color,
-            'description' => $validated['description'] ?? null,
+            'icon' => $iconPath,
             'is_active' => $validated['is_active'] ?? true,
         ]);
 
-        // ✅ Sync the grade relationship
+        // Sync the grade relationship
         $grade = Grade::findOrFail($validated['grade_id']);
         $grade->subjects()->syncWithoutDetaching([$subject->id]);
 
         return response()->json([
             'success' => true,
             'message' => 'Subject updated successfully.',
-            'data' => $subject->fresh(),
+            'data' => $this->transformSubject($subject->fresh()),
         ]);
     }
 
@@ -134,6 +175,11 @@ class SubjectController extends Controller
     {
         $subject = Subject::findOrFail($id);
 
+        // Delete icon from S3 if exists
+        if ($subject->icon && Storage::disk('s3')->exists($subject->icon)) {
+            Storage::disk('s3')->delete($subject->icon);
+        }
+
         $subject->delete();
 
         return response()->json([
@@ -142,6 +188,9 @@ class SubjectController extends Controller
         ]);
     }
 
+    /**
+     * Public Subjects (For students/parents)
+     */
     public function publicSubjects()
     {
         $subjects = Subject::where('is_active', true)
@@ -150,8 +199,7 @@ class SubjectController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $subjects,
+            'data' => $subjects->map(fn ($subject) => $this->transformSubject($subject)),
         ]);
     }
-
 }

@@ -22,7 +22,9 @@ class StudentSubjectController extends Controller
                     'id' => $subject->id,
                     'name' => $subject->name,
                     'slug' => $subject->slug,
-                    'icon' => $subject->icon,
+                    'icon' => $subject->icon
+                        ? asset('storage/' . $subject->icon)
+                        : null,
                     'color' => $subject->color,
                     'description' => $subject->description,
                 ];
@@ -49,7 +51,9 @@ class StudentSubjectController extends Controller
                 'id' => $subject->id,
                 'name' => $subject->name,
                 'slug' => $subject->slug,
-                'icon' => $subject->icon,
+                'icon' => $subject->icon
+                    ? asset('storage/' . $subject->icon)
+                    : null,
                 'color' => $subject->color,
                 'description' => $subject->description,
             ],

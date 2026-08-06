@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Grade;
+use App\Jobs\GenerateProfileAvatarJob;
 use Illuminate\Http\Request;
 
 class StudentProfileController extends Controller
@@ -95,4 +96,34 @@ class StudentProfileController extends Controller
             ],
         ]);
     }
+
+    /**
+     * Upload profile photo and generate AI avatar.
+     */
+    public function uploadPhoto(Request $request)
+    {
+        $request->validate([
+            'photo' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
+        ]);
+
+        $user = $request->user();
+
+        // Store uploaded photo temporarily
+        $tempPath = $request->file('photo')->store(
+            'temp/profile',
+            'local'
+        );
+
+        // Generate avatar in background
+        GenerateProfileAvatarJob::dispatch(
+            $user->id,
+            $tempPath
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Avatar generation has started.',
+        ]);
+    }
+
 }

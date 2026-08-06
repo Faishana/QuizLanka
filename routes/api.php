@@ -201,6 +201,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/profile', [StudentProfileController::class, 'show']);
     Route::put('/profile', [StudentProfileController::class, 'update']);
+    Route::post('/profile/photo', [StudentProfileController::class, 'uploadPhoto']);
 
     /*
     | Profile Subjects

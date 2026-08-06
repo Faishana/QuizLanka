@@ -8,18 +8,25 @@ use Illuminate\Support\Facades\Storage;
 
 class OpenAIService
 {
-    protected $client;
-    protected $model;
-    protected $visionModel;
+    protected \OpenAI\Client $client;
+    protected string $model;
+    protected string $visionModel;
 
     public function __construct()
     {
         $this->client = OpenAI::client(
-            env('OPENAI_API_KEY')
+            config('services.openai.api_key')
         );
 
-        $this->model = env('OPENAI_MODEL', 'gpt-4o-mini');
-        $this->visionModel = env('OPENAI_VISION_MODEL', 'gpt-4o');
+        $this->model = config(
+            'services.openai.model',
+            'gpt-4o-mini'
+        );
+
+        $this->visionModel = config(
+            'services.openai.vision_model',
+            'gpt-4o'
+        );
     }
 
     /*
@@ -31,7 +38,7 @@ class OpenAIService
     public function generateQuestions(
         string $text,
         int $questionCount = 7
-    ) {
+    ): string {
 
         // ✅ Improved prompt
         $prompt = <<<PROMPT
