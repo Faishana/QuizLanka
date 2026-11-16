@@ -7,86 +7,170 @@ use Illuminate\Support\Facades\Log;
 
 class OcrExtractionService
 {
-    public function extract($pdfPath)
-    {
+    /**
+     * Extract OCR text using the language selected
+     * for the material.
+     *
+     * si = sin + eng
+     * ta = tam + eng
+     * en = eng
+     */
+    public function extract(
+        string $pdfPath,
+        string $medium = 'si'
+    ): ?string {
+
+        $medium = $this->normalizeMedium($medium);
+
+        $languages = $this->getLanguages($medium);
+
+        $tesseractPath = env(
+            'TESSERACT_PATH',
+            '/usr/bin/tesseract'
+        );
+
+        $pdftoppm = env(
+            'POPPLER_IMAGE_PATH',
+            '/usr/bin/pdftoppm'
+        );
+
+        Log::info(
+            'OCR extraction started',
+            [
+                'medium' => $medium,
+                'languages' => $languages,
+                'pdf' => basename($pdfPath),
+                'tesseract' => $tesseractPath,
+                'pdftoppm' => $pdftoppm,
+                'psm' => 3,
+            ]
+        );
+
         /*
         |--------------------------------------------------------------------------
-        | Temp Folder
+        | Validate required binaries
         |--------------------------------------------------------------------------
         */
 
-        $outputDir = storage_path('app/ocr-temp');
+        if (!is_executable($tesseractPath)) {
 
-        if (!file_exists($outputDir)) {
-
-            mkdir($outputDir, 0777, true);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Clean Old Images
-        |--------------------------------------------------------------------------
-        */
-
-        foreach (glob($outputDir . '/*.jpg') as $oldImage) {
-
-            if (file_exists($oldImage)) {
-
-                unlink($oldImage);
-            }
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Get PDF Page Count
-        |--------------------------------------------------------------------------
-        */
-
-        $pageCount = $this->getPageCount($pdfPath);
-
-        Log::info('Detected page count', [
-            'pages' => $pageCount
-        ]);
-
-        if ($pageCount === 0) {
-
-            Log::error('Could not determine PDF page count.');
+            Log::error(
+                'Tesseract executable not found or not executable.',
+                [
+                    'path' => $tesseractPath,
+                ]
+            );
 
             return null;
         }
 
-        Log::info("PDF has {$pageCount} pages to process.");
+        if (!is_executable($pdftoppm)) {
+
+            Log::error(
+                'pdftoppm executable not found or not executable.',
+                [
+                    'path' => $pdftoppm,
+                ]
+            );
+
+            return null;
+        }
 
         /*
         |--------------------------------------------------------------------------
-        | Get Poppler Path
+        | Temporary directory
         |--------------------------------------------------------------------------
         */
 
-        $pdftoppm = env('POPPLER_IMAGE_PATH');
+        $outputDir = storage_path(
+            'app/ocr-temp/' . uniqid('material_', true)
+        );
+
+        if (!is_dir($outputDir)) {
+
+            mkdir(
+                $outputDir,
+                0777,
+                true
+            );
+        }
 
         /*
         |--------------------------------------------------------------------------
-        | Process Each Page
+        | Get page count
+        |--------------------------------------------------------------------------
+        */
+
+        $pageCount = $this->getPageCount(
+            $pdfPath
+        );
+
+        if ($pageCount <= 0) {
+
+            Log::error(
+                'OCR could not determine PDF page count.',
+                [
+                    'pdf' => basename($pdfPath),
+                ]
+            );
+
+            $this->removeDirectory(
+                $outputDir
+            );
+
+            return null;
+        }
+
+        Log::info(
+            'OCR PDF page count',
+            [
+                'pages' => $pageCount,
+                'medium' => $medium,
+            ]
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | OCR all pages
         |--------------------------------------------------------------------------
         */
 
         $text = '';
 
-        for ($page = 1; $page <= $pageCount; $page++) {
+        for (
+            $page = 1;
+            $page <= $pageCount;
+            $page++
+        ) {
 
-            Log::info("Processing page {$page}/{$pageCount}");
+            Log::info(
+                "OCR processing page {$page}/{$pageCount}",
+                [
+                    'medium' => $medium,
+                    'languages' => $languages,
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
-            | Convert Single Page to Image
+            | Render current page to JPEG
             |--------------------------------------------------------------------------
+            |
+            | pdftoppm generates:
+            |
+            | page-001.jpg
+            | page-002.jpg
+            | page-003.jpg
+            |
+            | depending on the output prefix.
+            |
             */
 
-            $imagePrefix = $outputDir . '/page';
+            $imagePrefix =
+                $outputDir . '/page';
 
             $command = sprintf(
-                '%s -f %d -l %d -jpeg -r 150 %s %s',
+                '%s -f %d -l %d -jpeg -r 300 %s %s 2>&1',
                 escapeshellarg($pdftoppm),
                 $page,
                 $page,
@@ -94,245 +178,665 @@ class OcrExtractionService
                 escapeshellarg($imagePrefix)
             );
 
-            Log::info("Page {$page}: Starting pdftoppm", [
-                'command' => $command
-            ]);
+            $output = [];
 
-            exec($command, $output, $resultCode);
+            $resultCode = 0;
 
-            Log::info("Page {$page}: Finished pdftoppm", [
-                'exit_code' => $resultCode
-            ]);
+            exec(
+                $command,
+                $output,
+                $resultCode
+            );
 
             if ($resultCode !== 0) {
 
-                Log::warning("Failed converting page {$page}. Exit code: {$resultCode}");
+                Log::warning(
+                    "pdftoppm failed for page {$page}",
+                    [
+                        'exit_code' => $resultCode,
+                        'output' => implode(
+                            "\n",
+                            $output
+                        ),
+                    ]
+                );
 
                 continue;
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Find Generated Image
+            | Locate generated image
             |--------------------------------------------------------------------------
+            |
+            | First try the exact filename generated by pdftoppm.
+            |
             */
 
-            $images = glob($outputDir . '/page-*.jpg');
+            $image = $outputDir .
+                '/page-' .
+                str_pad(
+                    (string) $page,
+                    3,
+                    '0',
+                    STR_PAD_LEFT
+                ) .
+                '.jpg';
 
-            if (empty($images)) {
+            /*
+            |--------------------------------------------------------------------------
+            | Fallback image detection
+            |--------------------------------------------------------------------------
+            |
+            | Some Poppler versions/configurations can produce a slightly
+            | different filename. If the exact filename is not found,
+            | inspect generated files and select the file corresponding
+            | to the current page.
+            |
+            */
 
-                Log::warning("No image generated for page {$page}.");
+            if (!file_exists($image)) {
 
-                continue;
-            }
+                $pageFiles = glob(
+                    $outputDir . '/page-*.jpg'
+                );
 
-            // Get the newest image or the one matching our page
-            $image = null;
+                $matchedImage = null;
 
-            foreach ($images as $img) {
+                foreach ($pageFiles as $candidate) {
 
-                // Try to extract page number from filename
-                if (preg_match('/page-(\d+)\.jpg$/', $img, $matches)) {
+                    $filename = basename($candidate);
 
-                    $imgPage = (int)$matches[1];
+                    /*
+                    | Example:
+                    | page-001.jpg
+                    */
 
-                    if ($imgPage === $page) {
+                    if (
+                        preg_match(
+                            '/page-(\d+)\.jpg$/i',
+                            $filename,
+                            $matches
+                        )
+                    ) {
 
-                        $image = $img;
+                        if (
+                            (int) $matches[1] === $page
+                        ) {
 
-                        break;
+                            $matchedImage = $candidate;
+
+                            break;
+                        }
                     }
+                }
+
+                if ($matchedImage) {
+
+                    $image = $matchedImage;
+
+                } else {
+
+                    Log::warning(
+                        "No image generated for page {$page}",
+                        [
+                            'output_dir' => $outputDir,
+                            'files' => $pageFiles,
+                        ]
+                    );
+
+                    continue;
                 }
             }
 
-            // If no match found by page number, use the latest generated image
-            if ($image === null && !empty($images)) {
-
-                usort($images, function($a, $b) {
-
-                    return filemtime($a) - filemtime($b);
-                });
-
-                $image = end($images);
-            }
-
-            if ($image === null || !file_exists($image)) {
-
-                Log::warning("No valid image found for page {$page}.");
-
-                continue;
-            }
+            Log::info(
+                "OCR image generated for page {$page}",
+                [
+                    'image' => $image,
+                    'size' => filesize($image),
+                ]
+            );
 
             /*
             |--------------------------------------------------------------------------
-            | OCR Process
+            | Tesseract OCR
             |--------------------------------------------------------------------------
             */
 
             try {
 
-                Log::info("Page {$page}: Starting Tesseract", [
-                    'image' => $image
-                ]);
+                /*
+                |--------------------------------------------------------------------------
+                | IMPORTANT:
+                | Use PSM 3.
+                |
+                | Manual server test:
+                |
+                | tesseract image.jpg stdout -l tam+eng --psm 3
+                |
+                | produced correct Tamil Unicode.
+                |--------------------------------------------------------------------------
+                */
 
                 $ocr = (new TesseractOCR($image))
-                    ->executable(env('TESSERACT_PATH'))
-                    ->lang('sin', 'eng')
-                    ->psm(6)
+                    ->executable(
+                        $tesseractPath
+                    )
+                    ->lang(...$languages)
+                    ->psm(3)
                     ->run();
 
-                Log::info("Page {$page}: Finished Tesseract", [
-                    'characters' => mb_strlen($ocr)
-                ]);
-
                 /*
                 |--------------------------------------------------------------------------
-                | Skip Almost-Empty Pages
+                | Normalize UTF-8
                 |--------------------------------------------------------------------------
                 */
 
-                if (mb_strlen(trim($ocr)) < 30) {
+                $ocr = $this->normalizeUtf8(
+                    $ocr
+                );
 
-                    Log::info("Skipped page {$page} - too short (only " . mb_strlen(trim($ocr)) . " chars)");
+                $ocr = trim(
+                    $ocr
+                );
+
+                $length = mb_strlen(
+                    $ocr
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | Log OCR result
+                |--------------------------------------------------------------------------
+                */
+
+                Log::info(
+                    "Tesseract finished page {$page}",
+                    [
+                        'medium' => $medium,
+                        'languages' => $languages,
+                        'characters' => $length,
+                        'preview' => mb_substr(
+                            $ocr,
+                            0,
+                            500
+                        ),
+                    ]
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | Skip almost-empty pages
+                |--------------------------------------------------------------------------
+                */
+
+                if ($length < 30) {
+
+                    Log::info(
+                        "Skipped page {$page} - OCR too short",
+                        [
+                            'characters' => $length,
+                        ]
+                    );
+
+                    @unlink($image);
 
                     continue;
                 }
 
                 /*
                 |--------------------------------------------------------------------------
-                | Skip OCR That's Mostly English (Invalid OCR)
+                | Validate OCR against expected language
                 |--------------------------------------------------------------------------
                 */
 
-                $sinhalaCount = preg_match_all('/[\x{0D80}-\x{0DFF}]/u', $ocr);
+                $quality = $this->analyzeOcr(
+                    $ocr,
+                    $medium
+                );
 
-                $englishCount = preg_match_all('/[A-Za-z]/', $ocr);
+                Log::info(
+                    "OCR language analysis page {$page}",
+                    [
+                        'medium' => $medium,
+                        'script_count' => $quality['script_count'],
+                        'latin_count' => $quality['latin_count'],
+                        'valid' => $quality['valid'],
+                    ]
+                );
 
-                if ($englishCount > ($sinhalaCount * 5)) {
+                /*
+                |--------------------------------------------------------------------------
+                | Handle weak language detection
+                |--------------------------------------------------------------------------
+                */
 
-                    Log::warning("Page {$page} looks like invalid OCR (English: {$englishCount}, Sinhala: {$sinhalaCount}). Skipping.");
-
-                    continue;
-                }
-
-                if (!empty(trim($ocr))) {
-
-                    $text .= "\n\n" . $ocr;
-
-                    Log::info("Successfully extracted text from page {$page}.");
-                }
-
-            } catch (\Exception $e) {
-
-                if (str_contains($e->getMessage(), 'Empty page')) {
-
-                    Log::info("Skipped empty page: {$image}");
-
-                } else {
+                if (!$quality['valid']) {
 
                     Log::warning(
-                        "OCR failed for page {$page} ({$image}): " .
-                        $e->getMessage()
+                        "OCR page {$page} did not strongly match expected language.",
+                        [
+                            'medium' => $medium,
+                            'script_count' => $quality['script_count'],
+                            'latin_count' => $quality['latin_count'],
+                            'preview' => mb_substr(
+                                $ocr,
+                                0,
+                                500
+                            ),
+                        ]
                     );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Do not discard pages containing useful mixed content.
+                    |--------------------------------------------------------------------------
+                    |
+                    | Example:
+                    |
+                    | Tamil page + English heading + numbers
+                    |
+                    | Only discard if there is almost no expected-language
+                    | or Latin content at all.
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if (
+                        $quality['script_count'] < 10 &&
+                        $quality['latin_count'] < 10
+                    ) {
+
+                        @unlink($image);
+
+                        continue;
+                    }
                 }
-            }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Cleanup Current Image
-            |--------------------------------------------------------------------------
-            */
+                /*
+                |--------------------------------------------------------------------------
+                | Add page OCR text
+                |--------------------------------------------------------------------------
+                */
 
-            if (file_exists($image)) {
+                $text .=
+                    "\n\n" .
+                    $ocr;
 
-                unlink($image);
+                /*
+                |--------------------------------------------------------------------------
+                | Remove processed image
+                |--------------------------------------------------------------------------
+                */
+
+                @unlink($image);
+
+            } catch (\Throwable $e) {
+
+                Log::warning(
+                    "Tesseract failed on page {$page}",
+                    [
+                        'medium' => $medium,
+                        'languages' => $languages,
+                        'image' => $image,
+                        'error' => $e->getMessage(),
+                    ]
+                );
+
+                if (
+                    file_exists($image)
+                ) {
+
+                    @unlink($image);
+                }
             }
         }
 
         /*
         |--------------------------------------------------------------------------
-        | UTF-8 Cleanup
+        | Cleanup temporary directory
         |--------------------------------------------------------------------------
         */
 
-        $text = mb_convert_encoding(
-            $text,
-            'UTF-8',
-            'UTF-8'
+        $this->removeDirectory(
+            $outputDir
         );
 
-        $text = iconv(
-            'UTF-8',
-            'UTF-8//IGNORE',
+        /*
+        |--------------------------------------------------------------------------
+        | Final UTF-8 normalization
+        |--------------------------------------------------------------------------
+        */
+
+        $text = $this->normalizeUtf8(
+            $text
+        );
+
+        $text = trim(
             $text
         );
 
         /*
         |--------------------------------------------------------------------------
-        | No Text Found
+        | No usable OCR text
         |--------------------------------------------------------------------------
         */
 
-        if (empty(trim($text))) {
+        if (
+            empty($text)
+        ) {
+
+            Log::warning(
+                'OCR completed but returned no usable text.',
+                [
+                    'medium' => $medium,
+                ]
+            );
 
             return null;
         }
 
         /*
         |--------------------------------------------------------------------------
-        | Return Text
+        | OCR completed
         |--------------------------------------------------------------------------
         */
 
-        Log::info('OCR extraction completed', [
-            'length' => mb_strlen($text)
-        ]);
+        Log::info(
+            'OCR extraction completed',
+            [
+                'medium' => $medium,
+                'characters' => mb_strlen($text),
+            ]
+        );
 
-        return trim($text);
+        return $text;
     }
 
     /**
-     * Get the number of pages in a PDF file
-     *
-     * @param string $pdfPath
-     * @return int
+     * Get Tesseract languages.
      */
-    private function getPageCount(string $pdfPath): int
-    {
+    private function getLanguages(
+        string $medium
+    ): array {
+
+        return match ($medium) {
+
+            'si' => [
+                'sin',
+                'eng',
+            ],
+
+            'ta' => [
+                'tam',
+                'eng',
+            ],
+
+            'en' => [
+                'eng',
+            ],
+
+            default => [
+                'eng',
+            ],
+        };
+    }
+
+    /**
+     * Analyze OCR language quality.
+     */
+    private function analyzeOcr(
+        string $text,
+        string $medium
+    ): array {
+
+        $sample = mb_substr(
+            $text,
+            0,
+            10000
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Sinhala Unicode range
+        |--------------------------------------------------------------------------
+        */
+
+        $sinhalaCount = preg_match_all(
+            '/[\x{0D80}-\x{0DFF}]/u',
+            $sample
+        ) ?: 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Tamil Unicode range
+        |--------------------------------------------------------------------------
+        */
+
+        $tamilCount = preg_match_all(
+            '/[\x{0B80}-\x{0BFF}]/u',
+            $sample
+        ) ?: 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Latin characters
+        |--------------------------------------------------------------------------
+        */
+
+        $latinCount = preg_match_all(
+            '/[A-Za-z]/',
+            $sample
+        ) ?: 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Expected script
+        |--------------------------------------------------------------------------
+        */
+
+        $scriptCount = match ($medium) {
+
+            'si' => $sinhalaCount,
+
+            'ta' => $tamilCount,
+
+            'en' => $latinCount,
+
+            default => 0,
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | English
+        |--------------------------------------------------------------------------
+        */
+
+        if ($medium === 'en') {
+
+            return [
+                'valid' => $latinCount >= 20,
+                'script_count' => $latinCount,
+                'latin_count' => $latinCount,
+            ];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Sinhala / Tamil
+        |--------------------------------------------------------------------------
+        */
+
+        return [
+            'valid' => $scriptCount >= 20,
+            'script_count' => $scriptCount,
+            'latin_count' => $latinCount,
+        ];
+    }
+
+    /**
+     * Get PDF page count.
+     */
+    private function getPageCount(
+        string $pdfPath
+    ): int {
+
+        $pdfinfo = env(
+            'PDFINFO_PATH',
+            '/usr/bin/pdfinfo'
+        );
+
+        $command =
+            escapeshellarg($pdfinfo) .
+            ' ' .
+            escapeshellarg($pdfPath);
+
         $output = [];
+
         $resultCode = 0;
 
-        $pdfinfo = env('PDFINFO_PATH', '/usr/bin/pdfinfo');
+        exec(
+            $command,
+            $output,
+            $resultCode
+        );
 
-        $command = escapeshellarg($pdfinfo) . ' ' . escapeshellarg($pdfPath);
+        if (
+            $resultCode !== 0
+        ) {
 
-        Log::info('Running pdfinfo', [
-            'command' => $command
-        ]);
-
-        exec($command, $output, $resultCode);
-
-        Log::info('Finished pdfinfo', [
-            'exit_code' => $resultCode
-        ]);
-
-        if ($resultCode !== 0) {
-
-            Log::error('Failed to get PDF info. Command: ' . $command);
+            Log::warning(
+                'pdfinfo failed.',
+                [
+                    'exit_code' => $resultCode,
+                    'output' => implode(
+                        "\n",
+                        $output
+                    ),
+                ]
+            );
 
             return 0;
         }
 
         foreach ($output as $line) {
 
-            if (preg_match('/Pages:\s+(\d+)/', $line, $matches)) {
+            if (
+                preg_match(
+                    '/Pages:\s+(\d+)/i',
+                    $line,
+                    $matches
+                )
+            ) {
 
-                return (int)$matches[1];
+                return (int) $matches[1];
             }
         }
 
-        Log::warning('Could not parse page count from pdfinfo output.');
-
         return 0;
+    }
+
+    /**
+     * Normalize UTF-8.
+     */
+    private function normalizeUtf8(
+        ?string $text
+    ): string {
+
+        if (!$text) {
+            return '';
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate UTF-8
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !mb_check_encoding(
+                $text,
+                'UTF-8'
+            )
+        ) {
+
+            $text = mb_convert_encoding(
+                $text,
+                'UTF-8',
+                'auto'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Remove invalid UTF-8 bytes only.
+        |--------------------------------------------------------------------------
+        |
+        | This does NOT translate or remove Tamil/Sinhala Unicode.
+        |--------------------------------------------------------------------------
+        */
+
+        $cleaned = iconv(
+            'UTF-8',
+            'UTF-8//IGNORE',
+            $text
+        );
+
+        return $cleaned !== false
+            ? $cleaned
+            : $text;
+    }
+
+    /**
+     * Normalize medium.
+     */
+    private function normalizeMedium(
+        string $medium
+    ): string {
+
+        return match (
+            strtolower(trim($medium))
+        ) {
+
+            'si',
+            'sinhala' => 'si',
+
+            'ta',
+            'tamil' => 'ta',
+
+            'en',
+            'english' => 'en',
+
+            default => 'si',
+        };
+    }
+
+    /**
+     * Remove temporary directory.
+     */
+    private function removeDirectory(
+        string $directory
+    ): void {
+
+        if (
+            !is_dir($directory)
+        ) {
+            return;
+        }
+
+        $files = glob(
+            $directory . '/*'
+        );
+
+        foreach ($files as $file) {
+
+            if (
+                is_file($file)
+            ) {
+
+                @unlink($file);
+            }
+        }
+
+        @rmdir($directory);
     }
 }

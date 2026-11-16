@@ -7,43 +7,48 @@ use Illuminate\Support\Facades\Log;
 class LegacySinhalaConverterService
 {
     /**
-     * Detect whether extracted text appears to be
-     * legacy Sinhala encoding (FMAbhaya, DL, etc.).
+     * Determine whether extracted PDF text contains
+     * common legacy/corrupted font indicators.
+     *
+     * This does NOT mean the document is Sinhala.
      */
-    public function isLegacy(string $text): bool
-    {
-        if (empty(trim($text))) {
+    public function isLegacy(
+        string $text
+    ): bool {
+
+        if (
+            empty(trim($text))
+        ) {
             return false;
         }
 
-        $sample = mb_substr($text, 0, 5000);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Detect Common Legacy Characters
-        |--------------------------------------------------------------------------
-        */
+        $sample = mb_substr(
+            $text,
+            0,
+            10000
+        );
 
         $legacyCount = preg_match_all(
             '/[;=%{}\[\]\\\\]|[úöÿðþ]/u',
             $sample
-        );
+        ) ?: 0;
 
-        return $legacyCount > 10;
+        return $legacyCount >= 10;
     }
 
     /**
-     * Convert legacy Sinhala to Unicode.
+     * Legacy Sinhala conversion is intentionally not performed here.
      *
-     * NOTE:
-     * This is currently a placeholder.
-     * In the next phase we'll integrate a proper
-     * legacy Sinhala conversion engine here.
+     * Legacy PDFs are rendered as images and processed using
+     * language-specific Tesseract OCR.
      */
-    public function convert(string $text): string
-    {
+    public function convert(
+        string $text
+    ): string {
+
         Log::warning(
-            'Legacy Sinhala converter not implemented yet. Returning original extracted text.'
+            'Legacy Sinhala conversion requested. ' .
+            'Use language-specific OCR instead.'
         );
 
         return $text;

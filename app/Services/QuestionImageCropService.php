@@ -19,88 +19,344 @@ class QuestionImageCropService
     }
 
     /**
-     * Crop a question from a page image and upload to R2.
+     * Crop ONLY visual media.
      *
-     * @param array $page
-     * [
-     *     page => 1,
-     *     local_path => ".../page_001.jpg",
-     *     r2_key => "pastpapers/material_25/pages/page_001.jpg"
-     * ]
-     *
-     * @param array $boundingBox
-     * [
-     *     x => 120,
-     *     y => 450,
-     *     width => 920,
-     *     height => 340
-     * ]
-     *
-     * @return string|null
+     * Never crop the complete question.
      */
-    public function cropQuestion(
+    public function cropMedia(
         array $page,
         array $boundingBox,
         int $materialId,
-        int $questionNumber
+        int $questionId,
+        int $mediaIndex = 1,
+        string $mediaType = 'image'
     ): ?string {
+
+        $tempFile = null;
 
         try {
 
-            if (!file_exists($page['local_path'])) {
+            /*
+            |--------------------------------------------------------------------------
+            | Page image
+            |--------------------------------------------------------------------------
+            */
 
-                Log::warning('Page image not found', [
-                    'path' => $page['local_path']
-                ]);
+            $localPath = $page['local_path'] ?? null;
+
+            if (
+                empty($localPath) ||
+                !file_exists($localPath)
+            ) {
+
+                Log::warning(
+                    'Past Paper Media Crop Page Image Not Found',
+                    [
+                        'material_id' => $materialId,
+                        'question_id' => $questionId,
+                        'page' => $page['page'] ?? null,
+                        'path' => $localPath,
+                    ]
+                );
 
                 return null;
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Bounding box
+            |--------------------------------------------------------------------------
+            */
+
+            foreach (
+                ['x', 'y', 'width', 'height']
+                as $key
+            ) {
+
+                if (!isset($boundingBox[$key])) {
+
+                    Log::warning(
+                        'Invalid Past Paper Media Bounding Box',
+                        [
+                            'material_id' => $materialId,
+                            'question_id' => $questionId,
+                            'media_type' => $mediaType,
+                            'bounding_box' => $boundingBox,
+                        ]
+                    );
+
+                    return null;
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Read image
+            |--------------------------------------------------------------------------
+            */
+
             $image = $this->imageManager->read(
-                $page['local_path']
+                $localPath
             );
+
+            $imageWidth = $image->width();
+            $imageHeight = $image->height();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Coordinates
+            |--------------------------------------------------------------------------
+            */
+
+            $x = (int) round(
+                (float) $boundingBox['x']
+            );
+
+            $y = (int) round(
+                (float) $boundingBox['y']
+            );
+
+            $width = (int) round(
+                (float) $boundingBox['width']
+            );
+
+            $height = (int) round(
+                (float) $boundingBox['height']
+            );
+
+            if (
+                $width <= 0 ||
+                $height <= 0
+            ) {
+                return null;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Clamp start
+            |--------------------------------------------------------------------------
+            */
+
+            $x = max(0, $x);
+            $y = max(0, $y);
+
+            if (
+                $x >= $imageWidth ||
+                $y >= $imageHeight
+            ) {
+
+                Log::warning(
+                    'Past Paper Media Bounding Box Outside Page',
+                    [
+                        'material_id' => $materialId,
+                        'question_id' => $questionId,
+                        'media_type' => $mediaType,
+                        'x' => $x,
+                        'y' => $y,
+                    ]
+                );
+
+                return null;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Clamp dimensions
+            |--------------------------------------------------------------------------
+            */
+
+            $width = min(
+                $width,
+                $imageWidth - $x
+            );
+
+            $height = min(
+                $height,
+                $imageHeight - $y
+            );
+
+            if (
+                $width <= 0 ||
+                $height <= 0
+            ) {
+                return null;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Crop media
+            |--------------------------------------------------------------------------
+            */
 
             $image->crop(
-                $boundingBox['width'],
-                $boundingBox['height'],
-                $boundingBox['x'],
-                $boundingBox['y']
+                $width,
+                $height,
+                $x,
+                $y
             );
 
-            $tempFile = storage_path(
-                'app/temp/question_' .
-                uniqid() .
-                '.jpg'
+            /*
+            |--------------------------------------------------------------------------
+            | Temp directory
+            |--------------------------------------------------------------------------
+            */
+
+            $tempDirectory = storage_path(
+                'app/temp'
             );
 
-            $image->save($tempFile);
+            if (!is_dir($tempDirectory)) {
+
+                mkdir(
+                    $tempDirectory,
+                    0775,
+                    true
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Temp file
+            |--------------------------------------------------------------------------
+            */
+
+            $tempFile =
+                $tempDirectory .
+                DIRECTORY_SEPARATOR .
+                'media_' .
+                uniqid('', true) .
+                '.jpg';
+
+            /*
+            |--------------------------------------------------------------------------
+            | Save
+            |--------------------------------------------------------------------------
+            */
+
+            $image->save(
+                $tempFile,
+                quality: 95
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Sanitize media type
+            |--------------------------------------------------------------------------
+            */
+
+            $safeMediaType = strtolower(
+                trim($mediaType)
+            );
+
+            $safeMediaType = preg_replace(
+                '/[^a-z0-9_-]/',
+                '',
+                $safeMediaType
+            );
+
+            if (empty($safeMediaType)) {
+                $safeMediaType = 'image';
+            }
+
+            $mediaIndex = max(
+                1,
+                (int) $mediaIndex
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | R2 key
+            |--------------------------------------------------------------------------
+            */
 
             $r2Key = sprintf(
-                'pastpapers/material_%d/questions/q%03d.jpg',
+                'pastpapers/material_%d/questions/q_%d/media_%03d_%s.jpg',
                 $materialId,
-                $questionNumber
+                $questionId,
+                $mediaIndex,
+                $safeMediaType
             );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Read
+            |--------------------------------------------------------------------------
+            */
+
+            $contents = file_get_contents(
+                $tempFile
+            );
+
+            if ($contents === false) {
+
+                throw new \RuntimeException(
+                    'Unable to read cropped media file.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Upload
+            |--------------------------------------------------------------------------
+            */
 
             Storage::disk('s3')->put(
                 $r2Key,
-                file_get_contents($tempFile)
+                $contents
             );
 
-            unlink($tempFile);
+            /*
+            |--------------------------------------------------------------------------
+            | Cleanup
+            |--------------------------------------------------------------------------
+            */
 
-            Log::info('Question Cropped', [
-                'question_number' => $questionNumber,
-                'r2_key' => $r2Key,
-            ]);
+            if (file_exists($tempFile)) {
+
+                unlink($tempFile);
+
+                $tempFile = null;
+            }
+
+            Log::info(
+                'Past Paper Media Cropped',
+                [
+                    'material_id' => $materialId,
+                    'question_id' => $questionId,
+                    'page' => $page['page'] ?? null,
+                    'media_index' => $mediaIndex,
+                    'media_type' => $safeMediaType,
+                    'r2_key' => $r2Key,
+                    'bounding_box' => [
+                        'x' => $x,
+                        'y' => $y,
+                        'width' => $width,
+                        'height' => $height,
+                    ],
+                ]
+            );
 
             return $r2Key;
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
 
-            Log::error('Question Crop Failed', [
-                'question_number' => $questionNumber,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error(
+                'Past Paper Media Crop Failed',
+                [
+                    'material_id' => $materialId,
+                    'question_id' => $questionId,
+                    'page' => $page['page'] ?? null,
+                    'media_type' => $mediaType,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            if (
+                $tempFile &&
+                file_exists($tempFile)
+            ) {
+                @unlink($tempFile);
+            }
 
             return null;
         }

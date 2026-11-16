@@ -80,20 +80,34 @@ class SubjectSeeder extends Seeder
             ],
         ];
 
-        foreach ($subjects as $subject) {
+        foreach ($subjects as $subjectData) {
 
-            Subject::firstOrCreate(
+            /*
+             * Subjects are now independent of Grade.
+             * Grade relationship is handled through
+             * the grade_subjects pivot table.
+             */
+            $subject = Subject::firstOrCreate(
                 [
-                    'grade_id' => $grade11->id,
-                    'slug' => $subject['slug'],
+                    'slug' => $subjectData['slug'],
                 ],
                 [
-                    'name' => $subject['name'],
-                    'color' => $subject['color'],
+                    'name' => $subjectData['name'],
+                    'color' => $subjectData['color'],
                 ]
             );
+
+            /*
+             * Attach subject to Grade 11
+             * without creating duplicate pivot records.
+             */
+            $grade11->subjects()->syncWithoutDetaching([
+                $subject->id
+            ]);
         }
 
-        $this->command->info('Grade 11 subjects seeded successfully.');
+        $this->command->info(
+            'Grade 11 subjects seeded successfully.'
+        );
     }
 }

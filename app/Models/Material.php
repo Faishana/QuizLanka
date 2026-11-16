@@ -10,18 +10,14 @@ class Material extends Model
 {
     use HasFactory;
 
-
-
     protected $fillable = [
-
         'uuid',
         'grade_id',
         'subject_id',
         'uploaded_by',
         'title',
-
+        'medium',
         'material_type',
-
         'file_name',
         'file_path',
         'file_type',
@@ -36,16 +32,9 @@ class Material extends Model
         parent::boot();
 
         static::creating(function ($material) {
-
             $material->uuid = Str::uuid();
         });
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Relationships
-    |--------------------------------------------------------------------------
-    */
 
     public function grade()
     {
@@ -56,7 +45,6 @@ class Material extends Model
     {
         return $this->belongsTo(Subject::class);
     }
-
 
     public function uploader()
     {
@@ -72,5 +60,4 @@ class Material extends Model
     {
         return $this->hasMany(MaterialChunk::class);
     }
-
 }

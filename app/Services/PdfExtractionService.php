@@ -7,51 +7,298 @@ use Illuminate\Support\Facades\Log;
 
 class PdfExtractionService
 {
-    protected LegacySinhalaConverterService $legacyDetector;
-    protected PdfOcrService $ocrService;
+    public function extract(
+        string $pdfPath,
+        string $medium = 'si'
+    ): array {
 
-    public function __construct(
-        LegacySinhalaConverterService $legacyDetector,
-        PdfOcrService $ocrService
-    ) {
-        $this->legacyDetector = $legacyDetector;
-        $this->ocrService = $ocrService;
-    }
+        $medium = $this->normalizeMedium($medium);
 
-    public function extract(string $pdfPath): string
-    {
         try {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Run pdftotext
+            |--------------------------------------------------------------------------
+            */
 
             $text = Pdf::getText(
                 $pdfPath,
                 env('POPPLER_TEXT_PATH')
             );
 
+            $text = $this->normalizeUtf8($text);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Empty PDF
+            |--------------------------------------------------------------------------
+            */
+
             if (empty(trim($text))) {
 
-                Log::info('pdftotext returned empty. Switching to OCR.');
+                Log::info(
+                    'pdftotext returned empty text.',
+                    [
+                        'medium' => $medium,
+                    ]
+                );
 
-                return $this->ocrService->extract($pdfPath);
+                return [
+                    'valid' => false,
+                    'text' => '',
+                    'reason' => 'empty',
+                ];
             }
 
-            if ($this->legacyDetector->isLegacy($text)) {
+            /*
+            |--------------------------------------------------------------------------
+            | Analyze extracted text
+            |--------------------------------------------------------------------------
+            */
 
-                Log::info('Legacy Sinhala detected. Switching to OCR.');
+            $analysis = $this->analyzeText(
+                $text,
+                $medium
+            );
 
-                return $this->ocrService->extract($pdfPath);
+            Log::info(
+                'PDF text analysis',
+                [
+                    'medium' => $medium,
+                    'characters' => mb_strlen($text),
+                    'script_count' => $analysis['script_count'],
+                    'latin_count' => $analysis['latin_count'],
+                    'legacy_count' => $analysis['legacy_count'],
+                    'valid' => $analysis['valid'],
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Good Unicode text
+            |--------------------------------------------------------------------------
+            */
+
+            if ($analysis['valid']) {
+
+                return [
+                    'valid' => true,
+                    'text' => $text,
+                    'reason' => 'valid_unicode',
+                ];
             }
 
-            Log::info('Unicode PDF detected. Using pdftotext.');
+            /*
+            |--------------------------------------------------------------------------
+            | Bad / legacy / wrong-language text
+            |--------------------------------------------------------------------------
+            */
 
-            return $text;
+            return [
+                'valid' => false,
+                'text' => $text,
+                'reason' => $analysis['reason'],
+            ];
 
         } catch (\Throwable $e) {
 
-            Log::error('PDF Extraction Failed', [
-                'error' => $e->getMessage(),
-            ]);
+            Log::error(
+                'PDF text extraction failed',
+                [
+                    'medium' => $medium,
+                    'error' => $e->getMessage(),
+                ]
+            );
 
+            return [
+                'valid' => false,
+                'text' => '',
+                'reason' => 'exception',
+            ];
+        }
+    }
+
+    /**
+     * Analyze whether extracted PDF text is usable
+     * for the requested language.
+     */
+    private function analyzeText(
+        string $text,
+        string $medium
+    ): array {
+
+        $sample = mb_substr(
+            $text,
+            0,
+            10000
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Sinhala
+        |--------------------------------------------------------------------------
+        */
+
+        $sinhalaCount = preg_match_all(
+            '/[\x{0D80}-\x{0DFF}]/u',
+            $sample
+        ) ?: 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Tamil
+        |--------------------------------------------------------------------------
+        */
+
+        $tamilCount = preg_match_all(
+            '/[\x{0B80}-\x{0BFF}]/u',
+            $sample
+        ) ?: 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Latin
+        |--------------------------------------------------------------------------
+        */
+
+        $latinCount = preg_match_all(
+            '/[A-Za-z]/',
+            $sample
+        ) ?: 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Legacy / corrupted PDF glyph indicators
+        |--------------------------------------------------------------------------
+        */
+
+        $legacyCount = preg_match_all(
+            '/[;=%{}\[\]\\\\]|[úöÿðþ]/u',
+            $sample
+        ) ?: 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Determine expected script
+        |--------------------------------------------------------------------------
+        */
+
+        $scriptCount = match ($medium) {
+
+            'si' => $sinhalaCount,
+
+            'ta' => $tamilCount,
+
+            'en' => $latinCount,
+
+            default => 0,
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | English PDF
+        |--------------------------------------------------------------------------
+        */
+
+        if ($medium === 'en') {
+
+            $valid =
+                $latinCount >= 20 &&
+                $legacyCount < 10;
+
+            return [
+                'valid' => $valid,
+                'script_count' => $latinCount,
+                'latin_count' => $latinCount,
+                'legacy_count' => $legacyCount,
+                'reason' => $valid
+                    ? 'valid_english'
+                    : 'invalid_english',
+            ];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Sinhala / Tamil PDF
+        |--------------------------------------------------------------------------
+        */
+
+        $valid =
+            $scriptCount >= 20 &&
+            $legacyCount < 10;
+
+        if ($scriptCount < 20) {
+
+            return [
+                'valid' => false,
+                'script_count' => $scriptCount,
+                'latin_count' => $latinCount,
+                'legacy_count' => $legacyCount,
+                'reason' => 'wrong_or_legacy_script',
+            ];
+        }
+
+        if ($legacyCount >= 10) {
+
+            return [
+                'valid' => false,
+                'script_count' => $scriptCount,
+                'latin_count' => $latinCount,
+                'legacy_count' => $legacyCount,
+                'reason' => 'legacy_encoding',
+            ];
+        }
+
+        return [
+            'valid' => true,
+            'script_count' => $scriptCount,
+            'latin_count' => $latinCount,
+            'legacy_count' => $legacyCount,
+            'reason' => 'valid_unicode',
+        ];
+    }
+
+    private function normalizeUtf8(
+        ?string $text
+    ): string {
+
+        if (!$text) {
             return '';
         }
+
+        if (!mb_check_encoding($text, 'UTF-8')) {
+
+            $text = mb_convert_encoding(
+                $text,
+                'UTF-8',
+                'auto'
+            );
+        }
+
+        return iconv(
+            'UTF-8',
+            'UTF-8//IGNORE',
+            $text
+        );
+    }
+
+    private function normalizeMedium(
+        string $medium
+    ): string {
+
+        return match (strtolower(trim($medium))) {
+
+            'si',
+            'sinhala' => 'si',
+
+            'ta',
+            'tamil' => 'ta',
+
+            'en',
+            'english' => 'en',
+
+            default => 'si',
+        };
     }
 }

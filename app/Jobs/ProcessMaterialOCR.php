@@ -14,10 +14,12 @@ use App\Jobs\GenerateQuestionsFromChunksJob;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 
-
 class ProcessMaterialOCR implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
 
     public Material $material;
 
@@ -27,26 +29,15 @@ class ProcessMaterialOCR implements ShouldQueue
 
     public $backoff = 60;
 
-    /**
-     * Create a new job instance.
-     */
-    public function __construct(Material $material)
-    {
+    public function __construct(
+        Material $material
+    ) {
         $this->material = $material;
     }
 
-    /**
-     * Execute the job.
-     */
     public function handle(): void
     {
         $tempFile = null;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Update Status
-        |--------------------------------------------------------------------------
-        */
 
         $this->material->update([
             'processing_status' => 'processing',
@@ -54,30 +45,88 @@ class ProcessMaterialOCR implements ShouldQueue
         ]);
 
         try {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Material information
+            |--------------------------------------------------------------------------
+            */
+
+            $medium = $this->normalizeMedium(
+                $this->material->medium
+            );
+
+            Log::info(
+                'OCR Job Started',
+                [
+                    'material_id' => $this->material->id,
+                    'file_path' => $this->material->file_path,
+                    'medium' => $medium,
+                    'subject_id' => $this->material->subject_id,
+                    'grade_id' => $this->material->grade_id,
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Extraction service
+            |--------------------------------------------------------------------------
+            */
+
             $extractor = app(
                 MaterialTextExtractionService::class
             );
 
             /*
             |--------------------------------------------------------------------------
-            | Download File From R2 To Temporary Location
+            | Temporary PDF
             |--------------------------------------------------------------------------
             */
 
-            $tempFile = storage_path(
-                'app/temp/' .
-                $this->material->id . '_' .
-                time() . '_' .
-                basename($this->material->file_path)
+            $tempDir = storage_path(
+                'app/temp'
             );
 
-            if (!file_exists(dirname($tempFile))) {
-                mkdir(dirname($tempFile), 0777, true);
+            if (
+                !is_dir($tempDir)
+            ) {
+
+                mkdir(
+                    $tempDir,
+                    0777,
+                    true
+                );
             }
+
+            $tempFile =
+                $tempDir .
+                '/' .
+                $this->material->id .
+                '_' .
+                time() .
+                '_' .
+                basename(
+                    $this->material->file_path
+                );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Download PDF from R2/S3
+            |--------------------------------------------------------------------------
+            */
 
             $fileContents = Storage::disk('s3')->get(
                 $this->material->file_path
             );
+
+            if (
+                empty($fileContents)
+            ) {
+
+                throw new \Exception(
+                    'Unable to download material file from storage.'
+                );
+            }
 
             file_put_contents(
                 $tempFile,
@@ -86,29 +135,39 @@ class ProcessMaterialOCR implements ShouldQueue
 
             /*
             |--------------------------------------------------------------------------
-            | Extract Text
+            | Extract text using material language
             |--------------------------------------------------------------------------
             */
 
-            $text = $extractor->extract($tempFile);
+            $text = $extractor->extract(
+                $tempFile,
+                $medium
+            );
 
             /*
             |--------------------------------------------------------------------------
-            | Delete Temporary File
+            | RAW extraction log
             |--------------------------------------------------------------------------
             */
 
-            // CHANGE #2: Log temporary file deletion
-            if ($tempFile && file_exists($tempFile)) {
-                unlink($tempFile);
-
-                Log::info('Temporary PDF deleted.', [
+            Log::info(
+                'PDF Text Extraction Result',
+                [
                     'material_id' => $this->material->id,
-                    'file' => $tempFile,
-                ]);
-            }
+                    'medium' => $medium,
+                    'text_length' => mb_strlen($text),
+                    'preview' => mb_substr(
+                        $text,
+                        0,
+                        3000
+                    ),
+                ]
+            );
 
-            if (empty($text)) {
+            if (
+                empty(trim($text))
+            ) {
+
                 throw new \Exception(
                     'No text extracted from material.'
                 );
@@ -116,36 +175,111 @@ class ProcessMaterialOCR implements ShouldQueue
 
             /*
             |--------------------------------------------------------------------------
-            | Clean OCR Text
+            | Delete temporary PDF
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                $tempFile &&
+                file_exists($tempFile)
+            ) {
+
+                unlink($tempFile);
+
+                $tempFile = null;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | AI text cleanup
             |--------------------------------------------------------------------------
             */
 
             $cleaner = new AiTextCleaningService();
 
-            $text = $cleaner->clean($text);
-
-            $text = mb_convert_encoding(
-                $text,
-                'UTF-8',
-                'UTF-8'
+            $text = $cleaner->clean(
+                $text
             );
 
-            $text = iconv(
-                'UTF-8',
-                'UTF-8//IGNORE',
+            Log::info(
+                'After AI Text Cleaning',
+                [
+                    'material_id' => $this->material->id,
+                    'medium' => $medium,
+                    'text_length' => mb_strlen($text),
+                    'preview' => mb_substr(
+                        $text,
+                        0,
+                        3000
+                    ),
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | UTF-8 validation
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                !mb_check_encoding(
+                    $text,
+                    'UTF-8'
+                )
+            ) {
+
+                Log::warning(
+                    'Extracted text is not valid UTF-8',
+                    [
+                        'material_id' => $this->material->id,
+                        'medium' => $medium,
+                    ]
+                );
+
+                $text = mb_convert_encoding(
+                    $text,
+                    'UTF-8',
+                    'auto'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Safe whitespace cleanup
+            |--------------------------------------------------------------------------
+            */
+
+            $text = preg_replace(
+                '/[ \t]+/u',
+                ' ',
                 $text
             );
 
             $text = preg_replace(
-                '/[^\PC\s]/u',
-                '',
+                '/\n{3,}/u',
+                "\n\n",
                 $text
             );
 
-            // SAVE TEXT BEFORE CHUNKING
+            $text = trim(
+                $text
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Save extracted text
+            |--------------------------------------------------------------------------
+            */
+
             $this->material->update([
-                'extracted_text' => $text
+                'extracted_text' => $text,
             ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Create chunks
+            |--------------------------------------------------------------------------
+            */
 
             $material = Material::findOrFail(
                 $this->material->id
@@ -155,83 +289,132 @@ class ProcessMaterialOCR implements ShouldQueue
                 \App\Services\MaterialChunkingService::class
             );
 
-            $chunksCreated = $chunkService->createChunks(
-                $material
-            );
+            $chunksCreated =
+                $chunkService->createChunks(
+                    $material
+                );
 
-            if ($chunksCreated === 0) {
-                throw new \Exception('No chunks could be created from extracted text');
+            if (
+                $chunksCreated === 0
+            ) {
+
+                throw new \Exception(
+                    'No chunks could be created from extracted text.'
+                );
             }
 
-            Log::info('Chunks Created', [
-                'material_id' => $this->material->id,
-                'count' => $chunksCreated
-            ]);
+            Log::info(
+                'Chunks Created',
+                [
+                    'material_id' => $this->material->id,
+                    'count' => $chunksCreated,
+                ]
+            );
 
-            // CHANGE #1: Update status to 'chunked' instead of 'completed'
+            /*
+            |--------------------------------------------------------------------------
+            | Update status
+            |--------------------------------------------------------------------------
+            */
+
             $this->material->update([
                 'processing_status' => 'chunked',
                 'processed_at' => now(),
                 'error_message' => null,
             ]);
 
-            // CHANGE #3: Refresh the model before dispatching
-            $this->material->refresh();
-
             /*
             |--------------------------------------------------------------------------
-            | Dispatch Question Generation
+            | Dispatch question generation
             |--------------------------------------------------------------------------
             */
 
-            // CHANGED: Dispatch individual chunk jobs instead of a single material job
-            foreach ($material->chunks as $chunk) {
+            $material->refresh();
+
+            foreach (
+                $material->chunks as $chunk
+            ) {
+
                 GenerateQuestionsFromChunksJob::dispatch(
                     $chunk
-                )->onQueue('question-generation');
+                )->onQueue(
+                    'question-generation'
+                );
             }
 
-            Log::info('OCR Job Completed. Chunk jobs dispatched.', [
-                'material_id' => $this->material->id,
-                'chunks' => $material->chunks->count(),
-            ]);
+            Log::info(
+                'OCR Job Completed. Chunk jobs dispatched.',
+                [
+                    'material_id' => $this->material->id,
+                    'medium' => $medium,
+                    'chunks' => $material->chunks->count(),
+                ]
+            );
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+
             /*
             |--------------------------------------------------------------------------
-            | Cleanup Temp File
+            | Cleanup temporary PDF
             |--------------------------------------------------------------------------
             */
 
-            // CHANGE #2: Log temporary file deletion in catch block
-            if ($tempFile && file_exists($tempFile)) {
-                unlink($tempFile);
+            if (
+                $tempFile &&
+                file_exists($tempFile)
+            ) {
 
-                Log::info('Temporary PDF deleted.', [
-                    'material_id' => $this->material->id,
-                    'file' => $tempFile,
-                ]);
+                unlink($tempFile);
             }
 
-            Log::error('OCR Queue Failed', [
-                'material_id' => $this->material->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            /*
+            |--------------------------------------------------------------------------
+            | Log failure
+            |--------------------------------------------------------------------------
+            */
+
+            Log::error(
+                'OCR Queue Failed',
+                [
+                    'material_id' => $this->material->id,
+                    'medium' => $this->material->medium ?? null,
+                    'subject_id' => $this->material->subject_id ?? null,
+                    'grade_id' => $this->material->grade_id ?? null,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]
+            );
 
             $this->material->update([
                 'processing_status' => 'failed',
                 'error_message' => $e->getMessage(),
             ]);
 
-            // Re-throw for queue retry
             throw $e;
         }
     }
 
-    /**
-     * Determine the time at which the job should timeout.
-     */
+    private function normalizeMedium(
+        ?string $medium
+    ): string {
+
+        return match (
+            strtolower(trim($medium ?? 'si'))
+        ) {
+
+            'si',
+            'sinhala' => 'si',
+
+            'ta',
+            'tamil' => 'ta',
+
+            'en',
+            'english' => 'en',
+
+            default => 'si',
+        };
+    }
+
     public function retryUntil(): \DateTime
     {
         return now()->addMinutes(30);

@@ -12,6 +12,9 @@ class Question extends Model
         'subject_id',
         'material_chunk_id',
         'chunk_order',
+
+        'quiz_language', // ✅ ADD THIS
+
         'question_text',
         'question_type',
         'difficulty',
@@ -26,7 +29,7 @@ class Question extends Model
 
         'source_page',
         'status',
-        'created_by' // 👈 Add this if missing
+        'created_by'
     ];
 
     protected $hidden = [

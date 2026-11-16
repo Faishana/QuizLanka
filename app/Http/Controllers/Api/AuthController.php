@@ -166,15 +166,17 @@ class AuthController extends Controller
     public function adminRegister(Request $request)
     {
         $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users,email',
+            'name'     => 'required|string|max:255',
+            'email'    => 'required|email|unique:users,email',
             'password' => 'required|min:8|confirmed',
         ]);
 
+        // grade_id / school left null — Admin has no academic info.
         $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
+            'name'          => $request->name,
+            'email'         => $request->email,
+            'password'      => Hash::make($request->password),
+            'user_category' => User::CATEGORY_ADMIN,   // 👈 CRITICAL
         ]);
 
         $user->assignRole('admin');
@@ -182,9 +184,16 @@ class AuthController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Admin registered successfully',
-            'user' => $user
-        ]);
+            'user'    => [
+                'id'            => $user->id,
+                'name'          => $user->name,
+                'email'         => $user->email,
+                'user_category' => $user->user_category,
+                'role'          => $user->getRoleNames()->first(),
+            ],
+        ], 201);
     }
+    
 }
 
 

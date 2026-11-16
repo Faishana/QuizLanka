@@ -58,7 +58,15 @@ class R2UploadService
             }
         }
 
-        return Storage::disk('s3')->url($filename);
+        $publicUrl = config('filesystems.disks.s3.public_url');
+
+        if (empty($publicUrl)) {
+            throw new RuntimeException(
+                'R2 public URL is not configured.'
+            );
+        }
+
+        return rtrim($publicUrl, '/') . '/' . $filename;
     }
 
     /**
@@ -73,22 +81,34 @@ class R2UploadService
             return;
         }
 
-        $baseUrl = config('filesystems.disks.s3.url');
+        $publicUrl = config('filesystems.disks.s3.public_url');
 
-        if (empty($baseUrl)) {
+        if (empty($publicUrl)) {
             throw new RuntimeException(
-                'Cloudflare R2 URL is not configured.'
+                'R2 public URL is not configured.'
             );
         }
 
-        $baseUrl = rtrim($baseUrl, '/');
+        $publicUrl = rtrim($publicUrl, '/');
 
-        $path = str_replace($baseUrl . '/', '', $url);
-
-        if (Storage::disk('s3')->exists($path)) {
-            Storage::disk('s3')->delete($path);
+        if (!str_starts_with($url, $publicUrl . '/')) {
+            throw new RuntimeException(
+                'Invalid Cloudflare R2 public URL.'
+            );
         }
+
+        $path = ltrim(
+            substr($url, strlen($publicUrl)),
+            '/'
+        );
+
+        if (empty($path)) {
+            return;
+        }
+
+        Storage::disk('s3')->delete($path);
     }
+
 
     /**
      * Check whether a file exists in Cloudflare R2.

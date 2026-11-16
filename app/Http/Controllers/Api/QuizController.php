@@ -17,158 +17,147 @@ use App\Services\StatisticsService;
 class QuizController extends Controller
 {
     /**
-     * Start a new quiz
-     */
-    public function start(Request $request)
-    {
-        $user = $request->user();
+ * Start a new quiz
+ */
+public function start(Request $request)
+{
+    $user = $request->user();
 
-        $request->validate([
-            'subject_id' => 'required|exists:subjects,id',
-            'difficulty' => 'required|in:easy,medium,hard',
-            'question_count' => 'nullable|integer|min:5|max:100',
-        ]);
+    $request->validate([
+        'subject_id'    => 'required|exists:subjects,id',
+        'difficulty'    => 'required|in:easy,medium,hard',
+        'quiz_language' => 'required|in:si,en,ta',
+        'question_count'=> 'nullable|integer|min:5|max:100',
+    ]);
 
-        $questionCount = $request->question_count ?? 20;
+    $questionCount = $request->question_count ?? 20;
 
-        /*
-        |--------------------------------------------------------------------------
-        | Fetch Questions
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Fetch Questions
+    |--------------------------------------------------------------------------
+    */
 
-        $questions = Question::with('options')
-            ->where('grade_id', $user->grade_id)
-            ->where('subject_id', $request->subject_id)
-            ->where('difficulty', $request->difficulty)
-            ->where('status', 'published')
-            ->inRandomOrder()
-            ->limit($questionCount)
-            ->get();
+    $questions = Question::with('options')
+        ->where('grade_id', $user->grade_id)
+        ->where('subject_id', $request->subject_id)
+        ->where('difficulty', $request->difficulty)
 
-        /*
-        |--------------------------------------------------------------------------
-        | Check Minimum Questions
-        |--------------------------------------------------------------------------
-        */
+        // IMPORTANT: Filter according to selected quiz language
+        ->where('quiz_language', $request->quiz_language)
 
-        if ($questions->count() < 5) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Not enough published questions available for this difficulty.'
-            ], 422);
-        }
+        ->where('status', 'published')
+        ->inRandomOrder()
+        ->limit($questionCount)
+        ->get();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Create Quiz
-        |--------------------------------------------------------------------------
-        */
+    /*
+    |--------------------------------------------------------------------------
+    | Check Minimum Questions
+    |--------------------------------------------------------------------------
+    */
 
-        $quiz = Quiz::create([
-            'user_id' => $user->id,
-            'grade_id' => $user->grade_id,
-            'subject_id' => $request->subject_id,
-            'quiz_type' => 'practice',
-            'total_questions' => $questions->count(),
-            'started_at' => now(),
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Save Quiz Questions
-        |--------------------------------------------------------------------------
-        */
-
-        foreach ($questions as $index => $question) {
-            QuizQuestion::create([
-                'quiz_id' => $quiz->id,
-                'question_id' => $question->id,
-                'question_order' => $index + 1,
-            ]);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Hide Sensitive Data
-        |--------------------------------------------------------------------------
-        */
-
-        $responseQuestions = $questions->map(function ($question) {
-
-            return [
-                'id' => $question->id,
-                'question_text' => $question->question_text,
-                'question_type' => $question->question_type,
-                'difficulty' => $question->difficulty,
-
-                'options' => $question->options->map(function ($option) {
-                    return [
-                        'id' => $option->id,
-                        'option_key' => $option->option_key,
-                        'option_text' => $option->option_text,
-                    ];
-                })->values(),
-            ];
-        });
-
+    if ($questions->count() < 5) {
         return response()->json([
-            'success' => true,
+            'success' => false,
+            'message' => 'Not enough published questions available for this language and difficulty.'
+        ], 422);
+    }
 
-            'quiz' => [
-                'id' => $quiz->id,
-                'subject_id' => $quiz->subject_id,
-                'difficulty' => $request->difficulty,
-                'total_questions' => $quiz->total_questions,
-                'started_at' => $quiz->started_at,
-            ],
+    /*
+    |--------------------------------------------------------------------------
+    | Create Quiz
+    |--------------------------------------------------------------------------
+    */
 
-            'questions' => $responseQuestions,
+    $quiz = Quiz::create([
+        'user_id'         => $user->id,
+        'grade_id'        => $user->grade_id,
+        'subject_id'      => $request->subject_id,
+        'quiz_type'       => 'practice',
+        'total_questions' => $questions->count(),
+        'started_at'      => now(),
+
+        // Save selected language if column exists
+        'quiz_language'   => $request->quiz_language,
+    ]);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Save Quiz Questions
+    |--------------------------------------------------------------------------
+    */
+
+    foreach ($questions as $index => $question) {
+        QuizQuestion::create([
+            'quiz_id'       => $quiz->id,
+            'question_id'   => $question->id,
+            'question_order'=> $index + 1,
         ]);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Hide Sensitive Data
+    |--------------------------------------------------------------------------
+    */
+
+    $responseQuestions = $questions->map(function ($question) {
+
+        return [
+            'id'            => $question->id,
+            'question_text' => $question->question_text,
+            'question_type' => $question->question_type,
+            'difficulty'    => $question->difficulty,
+
+            'options' => $question->options->map(function ($option) {
+                return [
+                    'id'          => $option->id,
+                    'option_key'  => $option->option_key,
+                    'option_text' => $option->option_text,
+                ];
+            })->values(),
+        ];
+    });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Response
+    |--------------------------------------------------------------------------
+    */
+
+    return response()->json([
+        'success' => true,
+
+        'quiz' => [
+            'id'              => $quiz->id,
+            'subject_id'      => $quiz->subject_id,
+            'difficulty'      => $request->difficulty,
+            'quiz_language'   => $request->quiz_language,
+            'total_questions' => $quiz->total_questions,
+            'started_at'      => $quiz->started_at,
+        ],
+
+        'questions' => $responseQuestions,
+    ]);
+}
     /**
      * Submit quiz answers and calculate results
      */
-
     public function submit(Request $request)
     {
+        /*
+        |--------------------------------------------------------------------------
+        | Validation
+        |--------------------------------------------------------------------------
+        */
+
         $request->validate([
             'quiz_id' => 'required|exists:quizzes,id',
             'answers' => 'required|array|min:1',
             'answers.*.question_id' => 'required|exists:questions,id',
             'answers.*.selected_option_id' => 'nullable|exists:question_options,id',
         ]);
-
-        $quiz = Quiz::findOrFail($request->quiz_id);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Authorization
-        |--------------------------------------------------------------------------
-        */
-
-        if ($quiz->user_id !== $request->user()->id) {
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized.'
-            ], 403);
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Prevent Resubmission
-        |--------------------------------------------------------------------------
-        */
-
-        if ($quiz->is_completed) {
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Quiz already submitted.'
-            ], 422);
-        }
 
         /*
         |--------------------------------------------------------------------------
@@ -181,7 +170,6 @@ class QuizController extends Controller
             ->duplicates();
 
         if ($duplicates->isNotEmpty()) {
-
             return response()->json([
                 'success' => false,
                 'message' => 'Duplicate questions submitted.'
@@ -192,9 +180,63 @@ class QuizController extends Controller
 
         try {
 
+            /*
+            |--------------------------------------------------------------------------
+            | Fetch Quiz With Database Lock
+            |--------------------------------------------------------------------------
+            */
+
+            $quiz = Quiz::where('id', $request->quiz_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Authorization
+            |--------------------------------------------------------------------------
+            */
+
+            if ((int) $quiz->user_id !== (int) $request->user()->id) {
+
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized.'
+                ], 403);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Prevent Resubmission
+            |--------------------------------------------------------------------------
+            */
+
+            if ($quiz->is_completed) {
+
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Quiz already submitted.'
+                ], 422);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Initialize Counters
+            |--------------------------------------------------------------------------
+            */
+
             $correctCount = 0;
             $wrongCount = 0;
             $processedQuestions = [];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Process Answers
+            |--------------------------------------------------------------------------
+            */
 
             foreach ($request->answers as $answer) {
 
@@ -223,7 +265,7 @@ class QuizController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | Correct Option
+                | Find Correct Option
                 |--------------------------------------------------------------------------
                 */
 
@@ -231,15 +273,12 @@ class QuizController extends Controller
                     'question_id',
                     $questionId
                 )
-                    ->where(
-                        'option_key',
-                        $question->correct_answer
-                    )
+                    ->where('option_key', $question->correct_answer)
                     ->first();
 
                 /*
                 |--------------------------------------------------------------------------
-                | Skipped Question
+                | Handle Skipped Question
                 |--------------------------------------------------------------------------
                 */
 
@@ -258,6 +297,7 @@ class QuizController extends Controller
                     );
 
                     $wrongCount++;
+
                     $processedQuestions[] = $questionId;
 
                     continue;
@@ -277,8 +317,13 @@ class QuizController extends Controller
                     continue;
                 }
 
-                $isCorrect =
-                    $correctOption &&
+                /*
+                |--------------------------------------------------------------------------
+                | Check Answer
+                |--------------------------------------------------------------------------
+                */
+
+                $isCorrect = $correctOption &&
                     $selectedOption->id == $correctOption->id;
 
                 /*
@@ -310,12 +355,14 @@ class QuizController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Unanswered Questions
+            | Calculate Unanswered Questions
             |--------------------------------------------------------------------------
             */
 
-            $remainingQuestions =
-                $quiz->total_questions - count($processedQuestions);
+            $remainingQuestions = max(
+                0,
+                $quiz->total_questions - count($processedQuestions)
+            );
 
             if ($remainingQuestions > 0) {
                 $wrongCount += $remainingQuestions;
@@ -323,17 +370,37 @@ class QuizController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Percentage
+            | Calculate Percentage
             |--------------------------------------------------------------------------
             */
 
             $percentage = $quiz->total_questions > 0
-                ? round(($correctCount / $quiz->total_questions) * 100, 2)
+                ? round(
+                    ($correctCount / $quiz->total_questions) * 100,
+                    2
+                )
                 : 0;
 
             /*
             |--------------------------------------------------------------------------
-            | Update Quiz
+            | Calculate Quiz Completion Time
+            |--------------------------------------------------------------------------
+            */
+
+            // Capture completion time only once.
+            $completedAt = now();
+
+            // Calculate total time taken in seconds.
+            $durationSeconds = $quiz->started_at
+                ? max(
+                    0,
+                    (int) $quiz->started_at->diffInSeconds($completedAt)
+                )
+                : 0;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Update Quiz Results
             |--------------------------------------------------------------------------
             */
 
@@ -349,11 +416,10 @@ class QuizController extends Controller
 
                 'is_completed' => true,
 
-                'completed_at' => now(),
+                'completed_at' => $completedAt,
 
-                'duration_seconds' => $quiz->started_at
-                    ? now()->diffInSeconds($quiz->started_at)
-                    : 0,
+                'duration_seconds' => $durationSeconds,
+
             ]);
 
             /*
@@ -365,6 +431,12 @@ class QuizController extends Controller
             $statistics = StatisticsService::refresh(
                 $request->user()
             );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Commit Transaction
+            |--------------------------------------------------------------------------
+            */
 
             DB::commit();
 
@@ -392,7 +464,12 @@ class QuizController extends Controller
 
                 'total_questions' => $quiz->total_questions,
 
-                'duration_seconds' => $quiz->duration_seconds,
+                // Total time taken in seconds
+                'duration_seconds' => $durationSeconds,
+
+                'started_at' => $quiz->started_at,
+
+                'completed_at' => $completedAt,
 
                 'statistics' => [
 
@@ -403,6 +480,7 @@ class QuizController extends Controller
                     'current_streak' => $statistics->current_streak,
 
                     'completed_quizzes' => $statistics->completed_quizzes,
+
                 ],
 
             ]);
@@ -472,36 +550,45 @@ class QuizController extends Controller
     }
 
     /**
-     * Quiz History
+     * Quiz History (Normal Quiz + Past Paper)
      */
     public function history(Request $request)
     {
         $quizzes = Quiz::where('user_id', $request->user()->id)
+            ->where('is_completed', true)
             ->with([
                 'grade:id,name',
-                'subject:id,name,color'
+                'subject:id,name,color',
+                'pastPaper:id,title,year,medium',
             ])
-            ->latest()
+            ->latest('completed_at')
             ->paginate(20);
 
         $history = collect($quizzes->items())->map(function ($quiz) {
 
             return [
-
                 'id' => $quiz->id,
 
                 'grade' => [
-                    'id' => $quiz->grade->id,
-                    'name' => $quiz->grade->name,
+                    'id' => $quiz->grade?->id,
+                    'name' => $quiz->grade?->name,
                 ],
 
                 'subject' => [
-                    'id' => $quiz->subject->id,
-                    'name' => $quiz->subject->name,
-                    'color' => $quiz->subject->color,
+                    'id' => $quiz->subject?->id,
+                    'name' => $quiz->subject?->name,
+                    'color' => $quiz->subject?->color,
                 ],
 
                 'quiz_type' => $quiz->quiz_type,
+
+                // Past paper details (null for normal quizzes)
+                'past_paper' => $quiz->pastPaper ? [
+                    'id' => $quiz->pastPaper->id,
+                    'title' => $quiz->pastPaper->title,
+                    'year' => $quiz->pastPaper->year,
+                    'medium' => $quiz->pastPaper->medium,
+                ] : null,
 
                 'total_questions' => $quiz->total_questions,
 
@@ -520,104 +607,186 @@ class QuizController extends Controller
         });
 
         return response()->json([
-
             'success' => true,
 
             'history' => $history,
 
             'pagination' => [
-
                 'current_page' => $quizzes->currentPage(),
-
                 'last_page' => $quizzes->lastPage(),
-
                 'per_page' => $quizzes->perPage(),
-
                 'total' => $quizzes->total(),
-
-            ]
-
+            ],
         ]);
     }
 
     /**
-     * Review Quiz (Includes Skipped Questions)
+     * Review Quiz (Normal Quiz + Past Paper)
      */
     public function review(Request $request, Quiz $quiz)
     {
-        if ($quiz->user_id !== $request->user()->id) {
+        // Authorization
+        if ((int) $quiz->user_id !== (int) $request->user()->id) {
             return response()->json([
                 'success' => false,
-                'message' => 'Unauthorized'
+                'message' => 'Unauthorized',
             ], 403);
         }
 
+        // Check completion
         if (!$quiz->is_completed) {
             return response()->json([
                 'success' => false,
-                'message' => 'Quiz not completed yet.'
+                'message' => 'Quiz not completed yet.',
             ], 422);
         }
 
-        $quizQuestions = QuizQuestion::with([
-            'question.options'
-        ])
-        ->where('quiz_id', $quiz->id)
-        ->orderBy('question_order')
-        ->get();
+        /*
+        |--------------------------------------------------------------------------
+        | Past Paper Review
+        |--------------------------------------------------------------------------
+        */
 
-        $review = $quizQuestions->map(function ($quizQuestion) use ($quiz) {
+        if ($quiz->quiz_type === 'past_paper') {
 
-            $question = $quizQuestion->question;
+            $quiz->load('pastPaper');
 
-            $answer = QuizAnswer::with('selectedOption')
+            $pastPaperAnswers = $quiz->pastPaperAnswers()
+                ->with('question.options')
+                ->get();
+
+            $review = $pastPaperAnswers->map(function ($answer) {
+
+                $question = $answer->question;
+
+                if (!$question) {
+                    return null;
+                }
+
+                $selectedOption = $question->options
+                    ->firstWhere('option_key', $answer->selected_answer);
+
+                $correctOption = $question->options
+                    ->firstWhere('option_key', $answer->correct_answer);
+
+                return [
+                    'question_id' => $question->id,
+
+                    'question_number' => $question->question_number,
+
+                    'question_text' => $question->question_text,
+
+                    'image_url' => $question->image_url,
+
+                    'options' => $question->options->map(function ($option) {
+                        return [
+                            'id' => $option->id,
+                            'option_key' => $option->option_key,
+                            'option_text' => $option->option_text,
+                        ];
+                    })->values(),
+
+                    'selected_answer' => $answer->selected_answer,
+
+                    'correct_answer' => $answer->correct_answer,
+
+                    'selected_option_id' => $selectedOption?->id,
+
+                    'correct_option_id' => $correctOption?->id,
+
+                    'selected_option' => $selectedOption?->option_text,
+
+                    'correct_option' => $correctOption?->option_text,
+
+                    'is_correct' => $answer->is_correct,
+
+                    'is_skipped' => $answer->is_skipped,
+
+                    'explanation' => $question->explanation,
+                ];
+            })->filter()->values();
+
+        } else {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Normal Quiz Review
+            |--------------------------------------------------------------------------
+            */
+
+            $quizQuestions = QuizQuestion::with([
+                'question.options',
+            ])
                 ->where('quiz_id', $quiz->id)
-                ->where('question_id', $question->id)
-                ->first();
+                ->orderBy('question_order')
+                ->get();
 
-            $correctOption = $question->options
-                ->firstWhere('option_key', $question->correct_answer);
+            $review = $quizQuestions->map(function ($quizQuestion) use ($quiz) {
 
-            return [
+                $question = $quizQuestion->question;
 
-                'question_id' => $question->id,
+                if (!$question) {
+                    return null;
+                }
 
-                'question_text' => $question->question_text,
+                $answer = QuizAnswer::with('selectedOption')
+                    ->where('quiz_id', $quiz->id)
+                    ->where('question_id', $question->id)
+                    ->first();
 
-                'options' => $question->options->map(function ($option) {
+                $correctOption = $question->options
+                    ->firstWhere('option_key', $question->correct_answer);
 
-                    return [
-                        'id' => $option->id,
-                        'option_key' => $option->option_key,
-                        'option_text' => $option->option_text,
-                    ];
+                return [
+                    'question_id' => $question->id,
 
-                })->values(),
+                    'question_text' => $question->question_text,
 
-                'selected_option_id' => $answer?->selected_option_id,
+                    'options' => $question->options->map(function ($option) {
+                        return [
+                            'id' => $option->id,
+                            'option_key' => $option->option_key,
+                            'option_text' => $option->option_text,
+                        ];
+                    })->values(),
 
-                'correct_option_id' => $correctOption?->id,
+                    'selected_option_id' => $answer?->selected_option_id,
 
-                'selected_option' => $answer?->selectedOption?->option_text,
+                    'correct_option_id' => $correctOption?->id,
 
-                'correct_option' => $correctOption?->option_text,
+                    'selected_option' => $answer?->selectedOption?->option_text,
 
-                'is_correct' => $answer?->is_correct ?? false,
+                    'correct_option' => $correctOption?->option_text,
 
-                'is_skipped' => is_null($answer?->selected_option_id),
+                    'is_correct' => $answer?->is_correct ?? false,
 
-                'explanation' => $question->explanation,
-            ];
+                    'is_skipped' => is_null($answer?->selected_option_id),
 
-        });
+                    'explanation' => $question->explanation,
+                ];
+            })->filter()->values();
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Common Response
+        |--------------------------------------------------------------------------
+        */
 
         return response()->json([
-
             'success' => true,
 
             'quiz' => [
-
                 'id' => $quiz->id,
+
+                'quiz_type' => $quiz->quiz_type,
+
+                'past_paper' => $quiz->pastPaper ? [
+                    'id' => $quiz->pastPaper->id,
+                    'title' => $quiz->pastPaper->title,
+                    'year' => $quiz->pastPaper->year,
+                    'medium' => $quiz->pastPaper->medium,
+                ] : null,
 
                 'score' => (float) $quiz->score,
 
@@ -629,10 +798,12 @@ class QuizController extends Controller
 
                 'total_questions' => $quiz->total_questions,
 
+                'duration_seconds' => $quiz->duration_seconds,
+
+                'completed_at' => $quiz->completed_at,
             ],
 
             'answers' => $review,
-
         ]);
     }
 

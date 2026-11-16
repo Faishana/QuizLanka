@@ -164,17 +164,25 @@ class AiQuestionGenerationService
     public function generateFromChunk($chunk, int $questionCount = 5)
 {
     try {
+
         $openAI = new OpenAIService();
-        $material = $chunk->material;
 
-        // Clean chunk text
-        $chunkText = $this->cleanText($chunk->content);
+        /*
+        |--------------------------------------------------------------------------
+        | Load Material
+        |--------------------------------------------------------------------------
+        */
 
-        // Skip front matter / metadata
-        if ($this->shouldSkipChunk($chunkText)) {
-            Log::info('Skipped metadata chunk', [
+        $material = $chunk->material()
+            ->with(['subject', 'grade'])
+            ->first();
+
+        if (!$material) {
+
+            Log::error('Material not found for chunk', [
                 'chunk_id' => $chunk->id,
             ]);
+
             $chunk->update([
                 'status' => 'failed',
             ]);
@@ -182,21 +190,166 @@ class AiQuestionGenerationService
             return false;
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize Medium
+        |--------------------------------------------------------------------------
+        |
+        | Material.medium should normally be:
+        |
+        | si = Sinhala
+        | en = English
+        | ta = Tamil
+        |
+        | But we normalize here to prevent unexpected values.
+        |
+        */
+
+        $medium = match (strtolower(trim($material->medium ?? 'si'))) {
+
+            'si',
+            'sinhala' => 'si',
+
+            'en',
+            'english' => 'en',
+
+            'ta',
+            'tamil' => 'ta',
+
+            default => 'si',
+
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | Subject & Grade
+        |--------------------------------------------------------------------------
+        */
+
+        $subjectName = $material->subject?->name ?? '';
+        $gradeName   = $material->grade?->name ?? '';
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Subject
+        |--------------------------------------------------------------------------
+        */
+
+        if (empty($subjectName)) {
+
+            Log::error('Subject missing for material', [
+                'material_id' => $material->id,
+                'subject_id' => $material->subject_id,
+                'chunk_id' => $chunk->id,
+            ]);
+
+            $chunk->update([
+                'status' => 'failed',
+            ]);
+
+            return false;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Grade
+        |--------------------------------------------------------------------------
+        */
+
+        if (empty($gradeName)) {
+
+            Log::error('Grade missing for material', [
+                'material_id' => $material->id,
+                'grade_id' => $material->grade_id,
+                'chunk_id' => $chunk->id,
+            ]);
+
+            $chunk->update([
+                'status' => 'failed',
+            ]);
+
+            return false;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Log Language
+        |--------------------------------------------------------------------------
+        */
+
+        Log::info('Generating Questions From Chunk', [
+            'chunk_id' => $chunk->id,
+            'material_id' => $material->id,
+            'subject' => $subjectName,
+            'grade' => $gradeName,
+            'material_medium' => $material->medium,
+            'normalized_medium' => $medium,
+        ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Clean Chunk Text
+        |--------------------------------------------------------------------------
+        */
+
+        $chunkText = $this->cleanText($chunk->content);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Skip Front Matter / Metadata
+        |--------------------------------------------------------------------------
+        */
+
+        if ($this->shouldSkipChunk($chunkText)) {
+
+            Log::info('Skipped metadata chunk', [
+                'chunk_id' => $chunk->id,
+                'material_id' => $material->id,
+                'subject' => $subjectName,
+                'grade' => $gradeName,
+                'medium' => $medium,
+            ]);
+
+            $chunk->update([
+                'status' => 'failed',
+            ]);
+
+            return false;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Generate Questions With OpenAI
+        |--------------------------------------------------------------------------
+        */
+
         try {
 
             $response = $openAI->generateQuestions(
                 $chunkText,
-                $questionCount
+                $questionCount,
+                $medium,
+                $subjectName,
+                $gradeName
             );
 
             Log::info('After OpenAI API Call', [
                 'chunk_id' => $chunk->id,
+                'material_id' => $material->id,
+                'subject' => $subjectName,
+                'grade' => $gradeName,
+                'medium' => $medium,
                 'response_length' => strlen($response),
             ]);
 
         } catch (\Throwable $e) {
+
             Log::error('OpenAI API Exception', [
                 'chunk_id' => $chunk->id,
+                'material_id' => $material->id,
+                'subject' => $subjectName,
+                'grade' => $gradeName,
+                'medium' => $medium,
                 'message' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
@@ -204,20 +357,28 @@ class AiQuestionGenerationService
             throw $e;
         }
 
-        // Clean and decode response
+        /*
+        |--------------------------------------------------------------------------
+        | Clean & Decode AI Response
+        |--------------------------------------------------------------------------
+        */
+
         $response = $this->cleanText($response);
+
         $decoded = json_decode($response, true);
 
         if (json_last_error() !== JSON_ERROR_NONE) {
+
             Log::error('JSON Decode Error', [
                 'chunk_id' => $chunk->id,
+                'material_id' => $material->id,
+                'subject' => $subjectName,
+                'grade' => $gradeName,
+                'medium' => $medium,
                 'error' => json_last_error_msg(),
-                'response_preview' => substr($response, 0, 500)
+                'response_preview' => substr($response, 0, 500),
             ]);
 
-            $chunk->update(['status' => 'failed']);
-
-            // Update material status on chunk failure
             $chunk->update([
                 'status' => 'failed',
             ]);
@@ -225,10 +386,24 @@ class AiQuestionGenerationService
             return false;
         }
 
-        if (!isset($decoded['questions']) || !is_array($decoded['questions'])) {
+        /*
+        |--------------------------------------------------------------------------
+        | Validate AI Response Structure
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !isset($decoded['questions']) ||
+            !is_array($decoded['questions'])
+        ) {
+
             Log::error('Invalid AI Response', [
                 'chunk_id' => $chunk->id,
-                'response_preview' => substr($response, 0, 500)
+                'material_id' => $material->id,
+                'subject' => $subjectName,
+                'grade' => $gradeName,
+                'medium' => $medium,
+                'response_preview' => substr($response, 0, 500),
             ]);
 
             $chunk->update([
@@ -240,11 +415,22 @@ class AiQuestionGenerationService
 
         $questions = $decoded['questions'];
 
-        // If no questions extracted
+        /*
+        |--------------------------------------------------------------------------
+        | No Questions
+        |--------------------------------------------------------------------------
+        */
+
         if (empty($questions)) {
+
             Log::warning('No questions extracted from chunk', [
                 'chunk_id' => $chunk->id,
+                'material_id' => $material->id,
+                'subject' => $subjectName,
+                'grade' => $gradeName,
+                'medium' => $medium,
             ]);
+
             $chunk->update([
                 'status' => 'failed',
             ]);
@@ -252,58 +438,243 @@ class AiQuestionGenerationService
             return false;
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Batch Subject Validation
+        |--------------------------------------------------------------------------
+        */
+
+        $validQuestions = [];
+
+        try {
+
+            $validations = $openAI->validateQuestionsBatch(
+                $questions,
+                $subjectName,
+                $gradeName
+            );
+
+            foreach ($questions as $index => $question) {
+
+                if (
+                    isset($validations[$index]) &&
+                    ($validations[$index]['is_valid'] ?? false) === true
+                ) {
+
+                    $validQuestions[] = $question;
+
+                } else {
+
+                    Log::warning(
+                        'Question rejected by subject validation',
+                        [
+                            'chunk_id' => $chunk->id,
+                            'material_id' => $material->id,
+                            'subject' => $subjectName,
+                            'grade' => $gradeName,
+                            'medium' => $medium,
+                            'question' => mb_substr(
+                                $question['question'] ?? '',
+                                0,
+                                100
+                            ),
+                        ]
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | All Questions Rejected
+            |--------------------------------------------------------------------------
+            */
+
+            if (empty($validQuestions)) {
+
+                Log::warning(
+                    'All questions rejected by subject validation',
+                    [
+                        'chunk_id' => $chunk->id,
+                        'material_id' => $material->id,
+                        'subject' => $subjectName,
+                        'grade' => $gradeName,
+                        'medium' => $medium,
+                        'total_questions' => count($questions),
+                    ]
+                );
+
+                $chunk->update([
+                    'status' => 'failed',
+                ]);
+
+                return false;
+            }
+
+            $questions = $validQuestions;
+
+        } catch (\Throwable $e) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validation Failure
+            |--------------------------------------------------------------------------
+            |
+            | If validation itself fails, continue with the generated
+            | questions instead of losing the entire chunk.
+            |
+            */
+
+            Log::warning(
+                'Batch validation failed, proceeding without validation',
+                [
+                    'chunk_id' => $chunk->id,
+                    'material_id' => $material->id,
+                    'subject' => $subjectName,
+                    'grade' => $gradeName,
+                    'medium' => $medium,
+                    'error' => $e->getMessage(),
+                ]
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Save Questions
+        |--------------------------------------------------------------------------
+        */
+
         DB::beginTransaction();
 
         try {
-            $existingQuestions = Question::where('material_id', $material->id)
+
+            $existingQuestions = Question::where(
+                'material_id',
+                $material->id
+            )
                 ->pluck('question_text')
-                ->map(function($text) {
+                ->map(function ($text) {
+
                     return $this->cleanText($text);
+
                 })
                 ->toArray();
 
             $savedCount = 0;
 
             foreach ($questions as $item) {
-                // Clean question text
-                $questionText = $this->cleanText($item['question'] ?? '');
+
+                /*
+                |--------------------------------------------------------------------------
+                | Question Text
+                |--------------------------------------------------------------------------
+                */
+
+                $questionText = $this->cleanText(
+                    $item['question'] ?? ''
+                );
+
                 if (empty($questionText)) {
                     continue;
                 }
 
-                // Normalize options
-                $options = $this->normalizeOptions($item['options'] ?? []);
+                /*
+                |--------------------------------------------------------------------------
+                | Options
+                |--------------------------------------------------------------------------
+                */
+
+                $options = $this->normalizeOptions(
+                    $item['options'] ?? []
+                );
+
                 if (!$options) {
-                    Log::warning('Invalid options format', ['question' => $questionText]);
+
+                    Log::warning('Invalid options format', [
+                        'question' => $questionText,
+                        'material_id' => $material->id,
+                        'medium' => $medium,
+                    ]);
+
                     continue;
                 }
 
-                // Get correct answer
-                $correctAnswer = strtoupper($this->cleanText($item['correct_answer'] ?? ''));
+                /*
+                |--------------------------------------------------------------------------
+                | Correct Answer
+                |--------------------------------------------------------------------------
+                */
 
-                // Validate correct answer
-                if (!in_array($correctAnswer, ['A', 'B', 'C', 'D'])) {
+                $correctAnswer = strtoupper(
+                    $this->cleanText(
+                        $item['correct_answer'] ?? ''
+                    )
+                );
+
+                if (!in_array(
+                    $correctAnswer,
+                    ['A', 'B', 'C', 'D']
+                )) {
+
                     Log::warning('Invalid correct answer', [
                         'question' => $questionText,
-                        'correct_answer' => $correctAnswer
+                        'correct_answer' => $correctAnswer,
+                        'material_id' => $material->id,
+                        'medium' => $medium,
                     ]);
+
                     continue;
                 }
 
-                // ✅ FIX: Enhanced duplicate check
-                if ($this->isDuplicate($questionText, $existingQuestions)) {
+                /*
+                |--------------------------------------------------------------------------
+                | Duplicate Check
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $this->isDuplicate(
+                        $questionText,
+                        $existingQuestions
+                    )
+                ) {
+
                     Log::info('Duplicate question skipped', [
-                        'question' => substr($questionText, 0, 50) . '...'
+                        'question' =>
+                            substr($questionText, 0, 50) . '...',
+                        'material_id' => $material->id,
+                        'medium' => $medium,
                     ]);
+
                     continue;
                 }
 
-                // Create question
+                /*
+                |--------------------------------------------------------------------------
+                | Create Question
+                |--------------------------------------------------------------------------
+                |
+                | ⭐ IMPORTANT FIX
+                |
+                | Save the material language into quiz_language.
+                |
+                */
+
+                Log::info('QUESTION LANGUAGE DEBUG', [
+                    'material_id' => $material->id,
+                    'material_medium_raw' => $material->medium,
+                    'normalized_medium' => $medium,
+                    'question_language_before_save' => $medium,
+                ]);
+
                 $question = Question::create([
+
                     'material_id' => $material->id,
                     'grade_id' => $material->grade_id,
                     'subject_id' => $material->subject_id,
                     'created_by' => $material->uploaded_by,
+
+                    'quiz_language' => $medium, // ✅ IMPORTANT
+
                     'question_text' => $questionText,
                     'question_type' => 'mcq',
                     'difficulty' => strtolower($item['difficulty'] ?? 'medium'),
@@ -316,95 +687,180 @@ class AiQuestionGenerationService
                     'status' => 'published',
                 ]);
 
-                // Save options
+                /*
+                |--------------------------------------------------------------------------
+                | Save Options
+                |--------------------------------------------------------------------------
+                */
+
                 foreach ($options as $key => $value) {
+
                     QuestionOption::create([
+
                         'question_id' => $question->id,
+
                         'option_key' => strtoupper($key),
+
                         'option_text' => $value,
-                        'is_correct' => strtoupper($key) === $correctAnswer,
+
+                        'is_correct' =>
+                            strtoupper($key) === $correctAnswer,
+
                     ]);
                 }
 
                 $savedCount++;
+
+                /*
+                |--------------------------------------------------------------------------
+                | Add To Existing Questions
+                |--------------------------------------------------------------------------
+                */
+
                 $existingQuestions[] = $questionText;
             }
 
             DB::commit();
 
-            // ✅ Mark chunk as processed with timestamp
+            /*
+            |--------------------------------------------------------------------------
+            | Mark Chunk Processed
+            |--------------------------------------------------------------------------
+            */
+
             $chunk->update([
                 'status' => 'processed',
                 'processed_at' => now(),
             ]);
 
             Log::info('Chunk Generation Success', [
+
                 'chunk_id' => $chunk->id,
-                'saved_count' => $savedCount
+
+                'material_id' => $material->id,
+
+                'subject' => $subjectName,
+
+                'grade' => $gradeName,
+
+                'medium' => $medium,
+
+                'saved_count' => $savedCount,
+
+                'total_questions' => count($questions),
+
             ]);
 
-            // ✅ FIX: Check remaining chunks properly
-            $total = MaterialChunk::where('material_id', $material->id)->count();
+            /*
+            |--------------------------------------------------------------------------
+            | Check Material Processing Status
+            |--------------------------------------------------------------------------
+            */
 
-            $processed = MaterialChunk::where('material_id', $material->id)
+            $total = MaterialChunk::where(
+                'material_id',
+                $material->id
+            )->count();
+
+            $processed = MaterialChunk::where(
+                'material_id',
+                $material->id
+            )
                 ->where('status', 'processed')
                 ->count();
 
-            $failed = MaterialChunk::where('material_id', $material->id)
+            $failed = MaterialChunk::where(
+                'material_id',
+                $material->id
+            )
                 ->where('status', 'failed')
                 ->count();
+
+            /*
+            |--------------------------------------------------------------------------
+            | All Chunks Finished
+            |--------------------------------------------------------------------------
+            */
 
             if (($processed + $failed) === $total) {
 
                 if ($processed > 0) {
 
                     $material->update([
+
                         'processing_status' => 'completed',
+
                         'processed_at' => now(),
+
                         'error_message' => null,
+
                     ]);
 
                 } else {
 
                     $material->update([
-                        'processing_status' => 'failed',
-                        'processed_at' => now(),
-                        'error_message' => 'No questions could be generated.',
-                    ]);
 
+                        'processing_status' => 'failed',
+
+                        'processed_at' => now(),
+
+                        'error_message' =>
+                            'No questions could be generated.',
+
+                    ]);
                 }
 
-                Log::info('Material processing completed', [
-                    'material_id' => $material->id,
-                    'processed_chunks' => $processed,
-                    'failed_chunks' => $failed,
-                    'total_chunks' => $total,
-                ]);
+                Log::info(
+                    'Material processing completed',
+                    [
+                        'material_id' => $material->id,
+                        'subject' => $subjectName,
+                        'grade' => $gradeName,
+                        'medium' => $medium,
+                        'processed_chunks' => $processed,
+                        'failed_chunks' => $failed,
+                        'total_chunks' => $total,
+                    ]
+                );
             }
 
             return true;
 
-        } catch (\Exception $e) {
-            // ✅ FIX: Only rollback if transaction is active
+        } catch (\Throwable $e) {
+
             if (DB::transactionLevel() > 0) {
                 DB::rollBack();
             }
+
             throw $e;
         }
 
     } catch (\Throwable $e) {
-        // ✅ FIX: Only rollback if transaction is active
+
         if (DB::transactionLevel() > 0) {
             DB::rollBack();
         }
 
         Log::error('Chunk Generation Failed', [
+
             'chunk_id' => $chunk->id ?? null,
+
+            'material_id' => $material->id ?? null,
+
+            'subject' => $subjectName ?? null,
+
+            'grade' => $gradeName ?? null,
+
+            'medium' => $medium ?? null,
+
             'error' => $e->getMessage(),
-            'trace' => $e->getTraceAsString()
+
+            'trace' => $e->getTraceAsString(),
+
         ]);
 
         if (isset($chunk)) {
+
             $chunk->update([
                 'status' => 'failed',
             ]);
@@ -413,5 +869,4 @@ class AiQuestionGenerationService
         return false;
     }
 }
-
 }

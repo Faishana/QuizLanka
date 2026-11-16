@@ -5,21 +5,26 @@ namespace App\Jobs;
 use App\Models\Material;
 use App\Models\Question;
 use App\Models\QuestionOption;
+use App\Services\PdfToImageService;
+use App\Services\PastPaperValidationService;
+use App\Services\PastPaperVisionService;
+use App\Services\QuestionImageCropService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
-use App\Services\PdfToImageService;
-use App\Services\PastPaperValidationService;
-use App\Services\QuestionValidationService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 class GeneratePastPaperQuestionsJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
 
     public Material $material;
 
@@ -37,42 +42,180 @@ class GeneratePastPaperQuestionsJob implements ShouldQueue
         $tempPdf = null;
 
         try {
-            Log::info('Past Paper Processing Started', [
-                'material_id' => $this->material->id
+
+            /*
+            |--------------------------------------------------------------------------
+            | START
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Past Paper Processing Started',
+                [
+                    'material_id' => $this->material->id,
+                    'title' => $this->material->title,
+                    'medium' => $this->material->medium,
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | VALIDATE MATERIAL LANGUAGE
+            |--------------------------------------------------------------------------
+            |
+            | Material.medium must be:
+            |
+            | si = Sinhala
+            | en = English
+            | ta = Tamil
+            |
+            */
+
+            $quizLanguage = strtolower(
+                trim($this->material->medium ?? '')
+            );
+
+            if (!in_array(
+                $quizLanguage,
+                ['si', 'en', 'ta'],
+                true
+            )) {
+
+                Log::error(
+                    'Invalid Past Paper Material Medium',
+                    [
+                        'material_id' =>
+                            $this->material->id,
+
+                        'medium' =>
+                            $this->material->medium,
+                    ]
+                );
+
+                throw new \RuntimeException(
+                    'Invalid material medium: ' .
+                    ($this->material->medium ?? 'NULL')
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | LANGUAGE LOG
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Past Paper Quiz Language Resolved',
+                [
+                    'material_id' =>
+                        $this->material->id,
+
+                    'material_medium' =>
+                        $this->material->medium,
+
+                    'quiz_language' =>
+                        $quizLanguage,
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | MARK PROCESSING
+            |--------------------------------------------------------------------------
+            */
+
+            $this->material->update([
+                'processing_status' => 'processing',
+                'error_message' => null,
             ]);
 
             /*
             |--------------------------------------------------------------------------
-            | Download PDF From R2
+            | TEMP DIRECTORY
             |--------------------------------------------------------------------------
             */
 
-            $tempPdf = storage_path(
-                'app/temp/' .
+            $tempDirectory = storage_path('app/temp');
+
+            if (!is_dir($tempDirectory)) {
+
+                mkdir(
+                    $tempDirectory,
+                    0775,
+                    true
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | TEMP PDF
+            |--------------------------------------------------------------------------
+            */
+
+            $tempPdf =
+                $tempDirectory .
+                DIRECTORY_SEPARATOR .
                 $this->material->id .
                 '_' .
                 time() .
-                '.pdf'
-            );
+                '.pdf';
 
-            if (!file_exists(dirname($tempPdf))) {
-                mkdir(dirname($tempPdf), 0777, true);
-            }
+            /*
+            |--------------------------------------------------------------------------
+            | DOWNLOAD PDF
+            |--------------------------------------------------------------------------
+            */
+
+            Log::info(
+                'Downloading Past Paper PDF',
+                [
+                    'material_id' =>
+                        $this->material->id,
+
+                    'file_path' =>
+                        $this->material->file_path,
+                ]
+            );
 
             $pdfContent = Storage::disk('s3')->get(
                 $this->material->file_path
             );
 
-            file_put_contents(
-                $tempPdf,
-                $pdfContent
-            );
+            if (
+                $pdfContent === null ||
+                $pdfContent === ''
+            ) {
+
+                throw new \RuntimeException(
+                    'Past paper PDF could not be downloaded or is empty.'
+                );
+            }
+
+            if (
+                file_put_contents(
+                    $tempPdf,
+                    $pdfContent
+                ) === false
+            ) {
+
+                throw new \RuntimeException(
+                    'Unable to save temporary past paper PDF.'
+                );
+            }
 
             /*
             |--------------------------------------------------------------------------
-            | Convert PDF Pages To Images
+            | CONVERT PDF TO IMAGES
             |--------------------------------------------------------------------------
             */
+
+            Log::info(
+                'Converting Past Paper PDF To Images',
+                [
+                    'material_id' =>
+                        $this->material->id,
+                ]
+            );
 
             $pageImages = app(
                 PdfToImageService::class
@@ -81,50 +224,130 @@ class GeneratePastPaperQuestionsJob implements ShouldQueue
                 $tempPdf
             );
 
-            Log::info('PDF Converted', [
-                'material_id' => $this->material->id,
-                'pages' => count($pageImages)
-            ]);
+            if (empty($pageImages)) {
 
+                throw new \RuntimeException(
+                    'No page images were generated from the past paper PDF.'
+                );
+            }
 
+            Log::info(
+                'PDF Conversion Completed',
+                [
+                    'material_id' =>
+                        $this->material->id,
 
-         /*
-        |--------------------------------------------------------------------------
-        | Extract Questions Using Vision AI
-        |--------------------------------------------------------------------------
-        */
+                    'total_pages' =>
+                        count($pageImages),
+                ]
+            );
 
-        $questions = app(
-            \App\Services\PastPaperVisionService::class
-        )->extractQuestions($pageImages);
+            /*
+            |--------------------------------------------------------------------------
+            | VISION EXTRACTION
+            |--------------------------------------------------------------------------
+            |
+            | PastPaperVisionService:
+            |
+            | ONE PAGE = ONE VISION REQUEST
+            |
+            */
 
-        Log::info('Vision extraction completed', [
-            'images' => count($pageImages),
-            'questions' => count($questions),
-        ]);
+            $questions = app(
+                PastPaperVisionService::class
+            )->extractQuestions(
+                $pageImages
+            );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Extracted Questions
-        |--------------------------------------------------------------------------
-        */
+            Log::info(
+                'Past Paper Vision Extraction Completed',
+                [
+                    'material_id' =>
+                        $this->material->id,
 
-        $validatedQuestions = app(
-            PastPaperValidationService::class
-        )->validateBatch($questions);
+                    'pages' =>
+                        count($pageImages),
 
-        Log::info('Past Paper Validation Completed', [
-            'valid_questions' => count($validatedQuestions),
-        ]);
+                    'questions_extracted' =>
+                        count($questions),
+
+                    'quiz_language' =>
+                        $quizLanguage,
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | NO QUESTIONS
+            |--------------------------------------------------------------------------
+            */
 
             if (empty($questions)) {
-                Log::warning('No Questions Extracted', [
-                    'material_id' => $this->material->id
-                ]);
 
                 $this->material->update([
                     'processing_status' => 'failed',
-                    'error_message' => 'No questions extracted from past paper'
+
+                    'error_message' =>
+                        'No genuine MCQ questions were extracted from the past paper.',
+
+                    'questions_count' => 0,
+                ]);
+
+                Log::warning(
+                    'No Questions Extracted From Past Paper',
+                    [
+                        'material_id' =>
+                            $this->material->id,
+                    ]
+                );
+
+                return;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | VALIDATION SERVICE
+            |--------------------------------------------------------------------------
+            */
+
+            $validatedQuestions = app(
+                PastPaperValidationService::class
+            )->validateBatch(
+                $questions
+            );
+
+            Log::info(
+                'Past Paper Validation Completed',
+                [
+                    'material_id' =>
+                        $this->material->id,
+
+                    'extracted_questions' =>
+                        count($questions),
+
+                    'valid_questions' =>
+                        count($validatedQuestions),
+
+                    'quiz_language' =>
+                        $quizLanguage,
+                ]
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | NO VALID QUESTIONS
+            |--------------------------------------------------------------------------
+            */
+
+            if (empty($validatedQuestions)) {
+
+                $this->material->update([
+                    'processing_status' => 'failed',
+
+                    'error_message' =>
+                        'No valid MCQ questions found in past paper.',
+
+                    'questions_count' => 0,
                 ]);
 
                 return;
@@ -132,185 +355,914 @@ class GeneratePastPaperQuestionsJob implements ShouldQueue
 
             /*
             |--------------------------------------------------------------------------
-            | Remove Existing Questions (if any)
+            | PAGE LOOKUP
             |--------------------------------------------------------------------------
+            |
+            | Build once instead of calling collect()->firstWhere()
+            | for every question.
+            |
             */
 
-            Question::where(
-                'material_id',
-                $this->material->id
-            )->delete();
+            $pageLookup = [];
 
-            DB::beginTransaction();
+            foreach ($pageImages as $pageImage) {
 
-            $savedCount = 0;
-
-            $cropService = app(\App\Services\QuestionImageCropService::class);
-
-            foreach ($validatedQuestions as $item) {
-                // Check for duplicate question in same material
-                $existing = Question::where('material_id', $this->material->id)
-                    ->where('question_text', trim($item['question'] ?? ''))
-                    ->first();
-
-                if ($existing) {
-
-                    Log::warning('Duplicate Question Skipped', [
-                        'question_number' => $item['question_number'] ?? null,
-                        'question' => $item['question'] ?? '',
-                    ]);
-
+                if (!is_array($pageImage)) {
                     continue;
                 }
 
-                $pageImage = collect($pageImages)
-                    ->firstWhere('page', $item['page']);
-
-                $questionImageKey = null;
-
-                if (
-                    $pageImage &&
-                    !empty($item['bounding_box'])
-                ) {
-                    $questionImageKey = $cropService->cropQuestion(
-                        $pageImage,
-                        $item['bounding_box'],
-                        $this->material->id,
-                        $item['question_number']
-                    );
+                if (!isset($pageImage['page'])) {
+                    continue;
                 }
 
-                $question = Question::create([
+                $page = (int) $pageImage['page'];
 
-                    'material_id' => $this->material->id,
+                if ($page <= 0) {
+                    continue;
+                }
 
-                    'grade_id' => $this->material->grade_id,
+                $pageLookup[$page] = $pageImage;
+            }
 
-                    'subject_id' => $this->material->subject_id,
+            /*
+            |--------------------------------------------------------------------------
+            | CROP SERVICE
+            |--------------------------------------------------------------------------
+            */
 
-                    'question_number' => $item['question_number'],
+            $cropService = app(
+                QuestionImageCropService::class
+            );
 
-                    'question_text' => trim($item['question']),
+            /*
+            |--------------------------------------------------------------------------
+            | DATABASE TRANSACTION
+            |--------------------------------------------------------------------------
+            */
 
-                    'question_image' => $questionImageKey,
+            $savedCount = 0;
 
-                    'page_image' => $pageImage['r2_key'] ?? null,
+            DB::transaction(function () use (
+                $validatedQuestions,
+                $pageLookup,
+                $cropService,
+                $quizLanguage,
+                &$savedCount
+            ) {
 
-                    'question_type' => 'mcq',
+                /*
+                |--------------------------------------------------------------------------
+                | REMOVE OLD QUESTIONS
+                |--------------------------------------------------------------------------
+                */
 
-                    'difficulty' => 'medium',
+                Question::where(
+                    'material_id',
+                    $this->material->id
+                )->delete();
 
-                    'correct_answer' => null,
+                /*
+                |--------------------------------------------------------------------------
+                | SAVE QUESTIONS
+                |--------------------------------------------------------------------------
+                */
 
-                    'ai_confidence' => null,
+                foreach (
+                    $validatedQuestions
+                    as $item
+                ) {
 
-                    'verification_status' => 'pending',
+                    /*
+                    |--------------------------------------------------------------------------
+                    | BASIC STRUCTURE
+                    |--------------------------------------------------------------------------
+                    */
 
-                    'explanation' => null,
-
-                    'is_ai_generated' => false,
-
-                    'source_type' => 'past_paper',
-
-                    'source_page' => $item['page'],
-
-                    'paper_name' => $this->material->title,
-
-                    'paper_year' => (int) substr(
-                        $this->material->title,
-                        0,
-                        4
-                    ),
-
-                    'status' => 'published',
-
-                ]);
-
-                    Log::info('Question Saved', [
-                        'id' => $question->id,
-                        'question_number' => $item['question_number'] ?? null,
-                    ]);
-
-                    Log::info('Saving Options', [
-                        'question_id' => $question->id,
-                        'options' => $item['options'] ?? [],
-                    ]);
-
-                // Save options with validation
-                foreach (($item['options'] ?? []) as $key => $value) {
-                    // Ensure valid option key (A, B, C, D)
-                    $key = strtoupper(trim($key));
-                    if (!in_array($key, ['A', 'B', 'C', 'D'])) {
+                    if (!is_array($item)) {
                         continue;
                     }
 
-                    QuestionOption::create([
-                        'question_id' => $question->id,
-                        'option_key' => $key,
-                        'option_text' => trim($value),
-                        'is_correct' => ($key === ($item['correct_answer'] ?? null)),
+                    /*
+                    |--------------------------------------------------------------------------
+                    | QUESTION NUMBER
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $questionNumber =
+                        isset(
+                            $item['question_number']
+                        )
+                            ? (int)
+                                $item['question_number']
+                            : 0;
+
+                    if ($questionNumber <= 0) {
+
+                        Log::warning(
+                            'Invalid Past Paper Question Number',
+                            [
+                                'material_id' =>
+                                    $this->material->id,
+
+                                'item' =>
+                                    $item,
+                            ]
+                        );
+
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | QUESTION TEXT
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $questionText = trim(
+                        (string) (
+                            $item['question']
+                            ?? ''
+                        )
+                    );
+
+                    if ($questionText === '') {
+
+                        Log::warning(
+                            'Empty Past Paper Question Text',
+                            [
+                                'material_id' =>
+                                    $this->material->id,
+
+                                'question_number' =>
+                                    $questionNumber,
+                            ]
+                        );
+
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | PAGE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $pageNumber =
+                        isset($item['page'])
+                            ? (int) $item['page']
+                            : 0;
+
+                    if ($pageNumber <= 0) {
+
+                        Log::warning(
+                            'Invalid Past Paper Question Page',
+                            [
+                                'material_id' =>
+                                    $this->material->id,
+
+                                'question_number' =>
+                                    $questionNumber,
+                            ]
+                        );
+
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | SOURCE PAGE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $pageImage =
+                        $pageLookup[$pageNumber]
+                        ?? null;
+
+                    if (!$pageImage) {
+
+                        Log::warning(
+                            'Source Page Not Found For Question',
+                            [
+                                'material_id' =>
+                                    $this->material->id,
+
+                                'question_number' =>
+                                    $questionNumber,
+
+                                'page' =>
+                                    $pageNumber,
+                            ]
+                        );
+
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | OPTIONS
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $options =
+                        $item['options']
+                        ?? [];
+
+                    if (!is_array($options)) {
+
+                        Log::warning(
+                            'Past Paper Question Options Invalid',
+                            [
+                                'material_id' =>
+                                    $this->material->id,
+
+                                'question_number' =>
+                                    $questionNumber,
+
+                                'page' =>
+                                    $pageNumber,
+                            ]
+                        );
+
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | REQUIRE A-D
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $normalizedOptions = [];
+
+                    $validOptions = true;
+
+                    foreach (
+                        ['A', 'B', 'C', 'D']
+                        as $optionKey
+                    ) {
+
+                        if (
+                            !array_key_exists(
+                                $optionKey,
+                                $options
+                            )
+                        ) {
+
+                            $validOptions = false;
+                            break;
+                        }
+
+                        $optionText = trim(
+                            (string)
+                                $options[$optionKey]
+                        );
+
+                        if ($optionText === '') {
+
+                            $validOptions = false;
+                            break;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Reject obvious hallucinations
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (
+                            $this->isPlaceholderOption(
+                                $optionText
+                            )
+                        ) {
+
+                            Log::warning(
+                                'Hallucinated Past Paper Option Rejected',
+                                [
+                                    'material_id' =>
+                                        $this->material->id,
+
+                                    'page' =>
+                                        $pageNumber,
+
+                                    'question_number' =>
+                                        $questionNumber,
+
+                                    'option' =>
+                                        $optionKey,
+
+                                    'value' =>
+                                        $optionText,
+                                ]
+                            );
+
+                            $validOptions = false;
+                            break;
+                        }
+
+                        $normalizedOptions[
+                            $optionKey
+                        ] = $optionText;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Do NOT save incomplete MCQ
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if (
+                        !$validOptions ||
+                        count($normalizedOptions) !== 4
+                    ) {
+
+                        Log::warning(
+                            'Incomplete/Hallucinated Past Paper MCQ Skipped',
+                            [
+                                'material_id' =>
+                                    $this->material->id,
+
+                                'page' =>
+                                    $pageNumber,
+
+                                'question_number' =>
+                                    $questionNumber,
+                            ]
+                        );
+
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | CREATE QUESTION
+                    |--------------------------------------------------------------------------
+                    |
+                    | IMPORTANT LANGUAGE FIX
+                    |
+                    | quiz_language comes directly from
+                    | materials.medium.
+                    |
+                    | si = Sinhala
+                    | en = English
+                    | ta = Tamil
+                    |
+                    */
+
+                    $question = Question::create([
+
+                        'material_id' =>
+                            $this->material->id,
+
+                        'grade_id' =>
+                            $this->material->grade_id,
+
+                        'subject_id' =>
+                            $this->material->subject_id,
+
+                        'quiz_language' =>
+                            $quizLanguage,
+
+                        'question_number' =>
+                            $questionNumber,
+
+                        'question_text' =>
+                            $questionText,
+
+                        'question_image' =>
+                            null,
+
+                        'page_image' =>
+                            $pageImage['r2_key']
+                            ?? null,
+
+                        'question_type' =>
+                            'mcq',
+
+                        'difficulty' =>
+                            'medium',
+
+                        'correct_answer' =>
+                            null,
+
+                        'ai_confidence' =>
+                            null,
+
+                        'verification_status' =>
+                            'pending',
+
+                        'explanation' =>
+                            null,
+
+                        'is_ai_generated' =>
+                            false,
+
+                        'source_type' =>
+                            'past_paper',
+
+                        'source_page' =>
+                            $pageNumber,
+
+                        'paper_name' =>
+                            $this->material->title,
+
+                        'paper_year' =>
+                            null,
+
+                        'status' =>
+                            'published',
                     ]);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | MEDIA
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $mediaItems =
+                        $item['media']
+                        ?? [];
+
+                    if (
+                        is_array($mediaItems) &&
+                        !empty($mediaItems)
+                    ) {
+
+                        foreach (
+                            $mediaItems
+                            as $mediaIndex => $media
+                        ) {
+
+                            if (!is_array($media)) {
+                                continue;
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Media type
+                            |--------------------------------------------------------------------------
+                            */
+
+                            $mediaType =
+                                strtolower(
+                                    trim(
+                                        (string) (
+                                            $media['type']
+                                            ?? ''
+                                        )
+                                    )
+                                );
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Bounding box
+                            |--------------------------------------------------------------------------
+                            */
+
+                            $mediaBoundingBox =
+                                $media['bounding_box']
+                                ?? null;
+
+                            if (
+                                !is_array(
+                                    $mediaBoundingBox
+                                )
+                            ) {
+
+                                Log::warning(
+                                    'Past Paper Media Missing Bounding Box',
+                                    [
+                                        'material_id' =>
+                                            $this->material->id,
+
+                                        'question_id' =>
+                                            $question->id,
+
+                                        'question_number' =>
+                                            $questionNumber,
+
+                                        'media_type' =>
+                                            $mediaType,
+                                    ]
+                                );
+
+                                continue;
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Crop media
+                            |--------------------------------------------------------------------------
+                            */
+
+                            try {
+
+                                $mediaImageKey =
+                                    $cropService->cropMedia(
+                                        $pageImage,
+                                        $mediaBoundingBox,
+                                        $this->material->id,
+                                        $question->id,
+                                        ((int) $mediaIndex) + 1,
+                                        $mediaType
+                                    );
+
+                                if (!$mediaImageKey) {
+
+                                    Log::warning(
+                                        'Past Paper Media Crop Returned Null',
+                                        [
+                                            'material_id' =>
+                                                $this->material->id,
+
+                                            'question_id' =>
+                                                $question->id,
+
+                                            'question_number' =>
+                                                $questionNumber,
+
+                                            'page' =>
+                                                $pageNumber,
+
+                                            'media_type' =>
+                                                $mediaType,
+                                        ]
+                                    );
+
+                                    continue;
+                                }
+
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Store media image
+                                |--------------------------------------------------------------------------
+                                */
+
+                                $question->question_image =
+                                    $mediaImageKey;
+
+                                $question->save();
+
+                                Log::info(
+                                    'Past Paper Media Cropped',
+                                    [
+                                        'material_id' =>
+                                            $this->material->id,
+
+                                        'question_id' =>
+                                            $question->id,
+
+                                        'question_number' =>
+                                            $questionNumber,
+
+                                        'page' =>
+                                            $pageNumber,
+
+                                        'media_type' =>
+                                            $mediaType,
+
+                                        'r2_key' =>
+                                            $mediaImageKey,
+
+                                        'bounding_box' =>
+                                            $mediaBoundingBox,
+                                    ]
+                                );
+
+                                /*
+                                |--------------------------------------------------------------------------
+                                | IMPORTANT
+                                |--------------------------------------------------------------------------
+                                |
+                                | Current Question model has only
+                                | one question_image column.
+                                |
+                                | Therefore save only the first
+                                | successfully cropped media.
+                                |--------------------------------------------------------------------------
+                                */
+
+                                break;
+
+                            } catch (Throwable $e) {
+
+                                Log::warning(
+                                    'Past Paper Media Crop Failed',
+                                    [
+                                        'material_id' =>
+                                            $this->material->id,
+
+                                        'question_id' =>
+                                            $question->id,
+
+                                        'question_number' =>
+                                            $questionNumber,
+
+                                        'page' =>
+                                            $pageNumber,
+
+                                        'media_type' =>
+                                            $mediaType,
+
+                                        'error' =>
+                                            $e->getMessage(),
+                                    ]
+                                );
+
+                                /*
+                                |--------------------------------------------------------------------------
+                                | Media failure must not destroy
+                                | the entire question.
+                                |--------------------------------------------------------------------------
+                                */
+
+                                continue;
+                            }
+                        }
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | SAVE OPTIONS
+                    |--------------------------------------------------------------------------
+                    */
+
+                    foreach (
+                        $normalizedOptions
+                        as $optionKey => $optionText
+                    ) {
+
+                        QuestionOption::create([
+
+                            'question_id' =>
+                                $question->id,
+
+                            'option_key' =>
+                                $optionKey,
+
+                            'option_text' =>
+                                $optionText,
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | Answer sheet pipeline will
+                            | update this later.
+                            |--------------------------------------------------------------------------
+                            */
+
+                            'is_correct' =>
+                                false,
+                        ]);
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | LOG SAVED QUESTION
+                    |--------------------------------------------------------------------------
+                    */
+
+                    Log::info(
+                        'Past Paper Question Saved',
+                        [
+                            'material_id' =>
+                                $this->material->id,
+
+                            'question_id' =>
+                                $question->id,
+
+                            'question_number' =>
+                                $questionNumber,
+
+                            'page' =>
+                                $pageNumber,
+
+                            'quiz_language' =>
+                                $quizLanguage,
+
+                            'has_question_image' =>
+                                !empty(
+                                    $question->question_image
+                                ),
+
+                            'has_media' =>
+                                !empty(
+                                    $mediaItems
+                                ),
+                        ]
+                    );
+
+                    $savedCount++;
                 }
-
-                Log::info('Options Saved', [
-                    'question_id' => $question->id,
-                ]);
-
-                $savedCount++;
-            }
-
-            Log::info('Saving Question', [
-                'question_number' => $item['question_number'] ?? null,
-                'question' => $item['question'] ?? '',
-            ]);
-
-            DB::commit();
+            });
 
             /*
             |--------------------------------------------------------------------------
-            | Update Material
+            | NOTHING SAVED
+            |--------------------------------------------------------------------------
+            */
+
+            if ($savedCount <= 0) {
+
+                $this->material->update([
+                    'processing_status' =>
+                        'failed',
+
+                    'error_message' =>
+                        'Questions were extracted but none passed validation and could be saved.',
+
+                    'questions_count' =>
+                        0,
+                ]);
+
+                Log::warning(
+                    'Past Paper Processing Saved Zero Questions',
+                    [
+                        'material_id' =>
+                            $this->material->id,
+
+                        'extracted' =>
+                            count($questions),
+
+                        'validated' =>
+                            count($validatedQuestions),
+
+                        'quiz_language' =>
+                            $quizLanguage,
+                    ]
+                );
+
+                return;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | COMPLETED
             |--------------------------------------------------------------------------
             */
 
             $this->material->update([
-                'processing_status' => 'completed',
-                'processed_at' => now(),
-                'questions_count' => $savedCount,
-                'error_message' => null,
+                'processing_status' =>
+                    'completed',
+
+                'processed_at' =>
+                    now(),
+
+                'questions_count' =>
+                    $savedCount,
+
+                'error_message' =>
+                    null,
             ]);
 
-            Log::info('Past Paper Processing Completed', [
-                'material_id' => $this->material->id,
-                'questions_saved' => $savedCount
-            ]);
+            Log::info(
+                'Past Paper Processing Completed',
+                [
+                    'material_id' =>
+                        $this->material->id,
 
-        } catch (\Exception $e) {
-            DB::rollBack();
+                    'questions_saved' =>
+                        $savedCount,
 
-            Log::error('Past Paper Processing Failed', [
-                'material_id' => $this->material->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+                    'quiz_language' =>
+                        $quizLanguage,
+                ]
+            );
 
-            $this->material->update([
-                'processing_status' => 'failed',
-                'error_message' => $e->getMessage(),
-            ]);
+        } catch (Throwable $e) {
 
-            // Re-throw for queue retry
+            /*
+            |--------------------------------------------------------------------------
+            | FAILED
+            |--------------------------------------------------------------------------
+            */
+
+            Log::error(
+                'Past Paper Processing Failed',
+                [
+                    'material_id' =>
+                        $this->material->id,
+
+                    'medium' =>
+                        $this->material->medium,
+
+                    'error' =>
+                        $e->getMessage(),
+
+                    'file' =>
+                        $e->getFile(),
+
+                    'line' =>
+                        $e->getLine(),
+
+                    'trace' =>
+                        $e->getTraceAsString(),
+                ]
+            );
+
+            try {
+
+                $this->material->update([
+                    'processing_status' =>
+                        'failed',
+
+                    'error_message' =>
+                        $e->getMessage(),
+                ]);
+
+            } catch (Throwable $updateException) {
+
+                Log::error(
+                    'Failed To Update Material Processing Status',
+                    [
+                        'material_id' =>
+                            $this->material->id,
+
+                        'error' =>
+                            $updateException->getMessage(),
+                    ]
+                );
+            }
+
             throw $e;
 
         } finally {
+
             /*
             |--------------------------------------------------------------------------
-            | Delete Temp PDF
+            | DELETE TEMP PDF
             |--------------------------------------------------------------------------
             */
 
-            if ($tempPdf && file_exists($tempPdf)) {
-                unlink($tempPdf);
+            if (
+                $tempPdf &&
+                file_exists($tempPdf)
+            ) {
+
+                try {
+
+                    unlink($tempPdf);
+
+                } catch (Throwable $e) {
+
+                    Log::warning(
+                        'Failed To Delete Temporary Past Paper PDF',
+                        [
+                            'file' =>
+                                $tempPdf,
+
+                            'error' =>
+                                $e->getMessage(),
+                        ]
+                    );
+                }
             }
         }
+    }
+
+    /**
+     * Reject obvious AI placeholder options.
+     *
+     * This is a SECOND safety layer.
+     *
+     * The Vision service already performs this check.
+     */
+    protected function isPlaceholderOption(
+        string $value
+    ): bool {
+
+        $normalized = mb_strtolower(
+            trim($value)
+        );
+
+        return in_array(
+            $normalized,
+            [
+
+                'පිළිතුර a',
+                'පිළිතුර b',
+                'පිළිතුර c',
+                'පිළිතුර d',
+
+                'පිලිතුර a',
+                'පිලිතුර b',
+                'පිලිතුර c',
+                'පිලිතුර d',
+
+                'answer a',
+                'answer b',
+                'answer c',
+                'answer d',
+
+                'option a',
+                'option b',
+                'option c',
+                'option d',
+
+                'option a.',
+                'option b.',
+                'option c.',
+                'option d.',
+            ],
+            true
+        );
     }
 }

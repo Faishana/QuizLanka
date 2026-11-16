@@ -26,6 +26,11 @@ use App\Http\Controllers\Api\QuizController;
 use App\Http\Controllers\Api\LeaderboardController;
 use App\Http\Controllers\Api\StudentProfileController;
 
+use App\Http\Controllers\Api\PastPaperController;
+use App\Http\Controllers\Api\BattlePresenceController;
+use App\Http\Controllers\Api\BattleController;
+
+use App\Http\Controllers\Api\StudentPastPaperController;
 
 /*
 |--------------------------------------------------------------------------
@@ -51,6 +56,7 @@ Route::get('/test-r2', function () {
 
 Route::get('/public/grades', [GradeController::class, 'publicGrades']);
 Route::get('/public/subjects', [SubjectController::class, 'publicSubjects']);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -82,14 +88,27 @@ Route::prefix('auth')->group(function () {
 
 Route::prefix('student')->group(function () {
 
+    // Registration & Authentication
     Route::post('/register', [StudentAuthController::class, 'register']);
     Route::post('/login', [StudentAuthController::class, 'login']);
     Route::post('/google-login', [StudentAuthController::class, 'googleLogin']);
 
+    // Password Reset
+    Route::post('/forgot-password', [StudentAuthController::class, 'forgotPassword']);
+    Route::post('/verify-otp', [StudentAuthController::class, 'verifyOtp']);
+    Route::post('/reset-password', [StudentAuthController::class, 'resetPassword']);
+
+    // Authenticated Routes
     Route::middleware('auth:sanctum')->group(function () {
 
         Route::post('/logout', [StudentAuthController::class, 'logout']);
         Route::get('/me', [StudentAuthController::class, 'me']);
+
+        // Complete Student / Government Exam Candidate Onboarding
+        Route::post(
+            '/complete-onboarding',
+            [StudentAuthController::class, 'completeOnboarding']
+        );
 
     });
 
@@ -130,6 +149,7 @@ Route::prefix('admin')
         Route::get('/subjects/grade/{gradeId}', [SubjectController::class, 'byGrade']);
         Route::put('/subjects/{id}', [SubjectController::class, 'update']);
         Route::delete('/subjects/{id}', [SubjectController::class, 'destroy']);
+        Route::get('/grades/{grade}/subjects', [SubjectController::class, 'byGrade']);
 
         /*
         | Materials
@@ -178,6 +198,18 @@ Route::prefix('admin')
         Route::put('/profile', [ProfileController::class, 'update']);
         Route::put('/profile/password', [ProfileController::class, 'changePassword']);
 
+        /*
+        | Past Papers (Admin)
+        */
+
+        Route::get('/past-papers', [PastPaperController::class, 'index']);
+        Route::post('/past-papers', [PastPaperController::class, 'store']);
+
+        Route::post('/past-papers/upload-image', [PastPaperController::class, 'uploadImage']);
+
+        Route::get('/past-papers/{id}', [PastPaperController::class, 'show']);
+        Route::put('/past-papers/{id}', [PastPaperController::class, 'update']);
+        Route::delete('/past-papers/{id}', [PastPaperController::class, 'destroy']);
 
     });
 
@@ -226,6 +258,40 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/subjects/{subject}/materials', [StudentMaterialController::class, 'bySubject']);
 
     /*
+    |--------------------------------------------------------------------------
+    | Student Past Papers
+    |--------------------------------------------------------------------------
+    */
+
+    Route::prefix('past-papers')->group(function () {
+
+        // Get available subjects
+        Route::get('/subjects', [StudentPastPaperController::class, 'subjects']);
+
+        // Get all accessible past papers with filters
+        Route::get('/', [StudentPastPaperController::class, 'index']);
+
+        // Get a single past paper with questions
+        Route::get('/{id}', [StudentPastPaperController::class, 'show']);
+
+        // Start or resume a past paper quiz
+        Route::post('/{id}/start', [StudentPastPaperController::class, 'start']);
+
+        // Submit past paper answers
+        Route::post('/{id}/submit', [StudentPastPaperController::class, 'submit']);
+
+        // Save individual past paper answer
+        Route::post('/past-paper-attempts/{quizId}/answers', [StudentPastPaperController::class, 'saveAnswer']);
+
+    });
+
+    // Save an individual answer during a past paper attempt
+    Route::post(
+        '/past-paper-attempts/{quizId}/answers',
+        [StudentPastPaperController::class, 'saveAnswer']
+    );
+
+    /*
     | Quiz
     */
 
@@ -240,5 +306,23 @@ Route::middleware('auth:sanctum')->group(function () {
     */
 
     Route::get('/leaderboard', [LeaderboardController::class, 'index']);
+
+    /*
+    | Battle Presence
+    */
+    Route::post('/battle/heartbeat', [BattlePresenceController::class, 'heartbeat']);
+    Route::get('/battle/online-students', [BattlePresenceController::class, 'onlineStudents']);
+
+    Route::prefix('battle')->group(function () {
+        Route::post('/challenge', [BattleController::class, 'challenge']);
+        Route::get('/invitations', [BattleController::class, 'invitations']);
+        Route::get('/my-challenges', [BattleController::class, 'myChallenges']);
+
+        Route::post('/{battle}/accept', [BattleController::class, 'accept']);
+        Route::post('/{battle}/reject', [BattleController::class, 'reject']);
+        Route::post('/{battle}/start', [BattleController::class, 'start']);
+        Route::get('/{battle}/questions', [BattleController::class, 'questions']);
+        Route::post('/{battle}/answer', [BattleController::class, 'submitAnswer']);
+    });
 
 });

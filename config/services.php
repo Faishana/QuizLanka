@@ -31,8 +31,14 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
-     'openai' => [
+    'openai' => [
         'api_key' => env('OPENAI_API_KEY'),
+
+        'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+
+        'vision_model' => env('OPENAI_VISION_MODEL', 'gpt-4o'),
+
+        'image_model' => env('OPENAI_IMAGE_MODEL', 'gpt-image-2.5-sunburst'),
     ],
 
 ];

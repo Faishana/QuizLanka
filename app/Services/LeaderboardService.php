@@ -13,16 +13,8 @@ class LeaderboardService
     {
         $user->loadMissing('statistics');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Ensure statistics record exists
-        |--------------------------------------------------------------------------
-        */
-
         if (!$user->statistics) {
-
             $user->statistics()->create();
-
             $user->load('statistics');
         }
 
@@ -100,21 +92,13 @@ class LeaderboardService
             'my_rank' => [
 
                 'rank' => $rank,
-
                 'name' => $user->name,
-
                 'school' => $user->school,
-
                 'district' => $user->district,
-
                 'level' => $user->statistics->level,
-
                 'xp' => $user->statistics->xp,
-
                 'completed_quizzes' => $user->statistics->completed_quizzes,
-
                 'average_percentage' => $user->statistics->average_percentage,
-
                 'current_streak' => $user->statistics->current_streak,
 
             ],
@@ -128,6 +112,7 @@ class LeaderboardService
             'district' => $this->formatLeaderboard($district),
 
             'subjects' => [],
+
         ];
     }
 
@@ -142,7 +127,12 @@ class LeaderboardService
 
                 'rank' => $index + 1,
 
+                'id' => $student->id,
+
                 'name' => $student->name,
+
+                // Profile image URL
+                'avatar' => $student->profile_image,
 
                 'school' => $student->school,
 

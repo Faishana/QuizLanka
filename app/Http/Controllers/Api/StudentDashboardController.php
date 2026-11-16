@@ -141,12 +141,13 @@ class StudentDashboardController extends Controller
 
                 'district' => $user->district,
 
+                'profile_image' => $user->profile_image,
+
+                'display_avatar' => $user->display_avatar,
+
                 'grade' => [
-
                     'id' => $user->grade?->id,
-
                     'name' => $user->grade?->name,
-
                 ],
 
             ],

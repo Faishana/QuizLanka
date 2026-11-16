@@ -6,9 +6,14 @@ class PastPaperValidationService
 {
     public function validateBatch(array $questions): array
     {
-        return array_values(array_filter($questions, function ($question) {
-            return $this->validateQuestion($question);
-        }));
+        return array_values(
+            array_filter(
+                $questions,
+                function ($question) {
+                    return $this->validateQuestion($question);
+                }
+            )
+        );
     }
 
     public function validateQuestion(array $question): bool
@@ -19,16 +24,18 @@ class PastPaperValidationService
 
         $options = $question['options'] ?? [];
 
-        if (count($options) != 4) {
+        if (count($options) !== 4) {
             return false;
         }
 
-        foreach (['A','B','C','D'] as $key) {
+        foreach (['A', 'B', 'C', 'D'] as $key) {
 
-            if (empty($options[$key])) {
+            if (
+                !isset($options[$key]) ||
+                trim((string) $options[$key]) === ''
+            ) {
                 return false;
             }
-
         }
 
         return true;

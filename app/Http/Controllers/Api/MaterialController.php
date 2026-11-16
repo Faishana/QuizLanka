@@ -17,134 +17,277 @@ use Illuminate\Support\Facades\Log;
 class MaterialController extends Controller
 {
     /**
-     * Upload Material
-     */
-    public function upload(Request $request)
-    {
-        $request->validate([
-            'grade_id' => 'required|exists:grades,id',
-            'subject_id' => 'required|exists:subjects,id',
-            'title' => 'required|string|max:255',
-            'material_type' => 'required|in:lesson,past_paper',
-            'file' => 'required|file|mimes:pdf,docx,txt|max:102400',
-        ]);
+ * Upload Material
+ */
+public function upload(Request $request)
+{
+    /*
+    |--------------------------------------------------------------------------
+    | Validate Request
+    |--------------------------------------------------------------------------
+    */
 
-        /*
-        |--------------------------------------------------------------------------
-        | Store File
-        |--------------------------------------------------------------------------
-        */
+    $request->validate([
+        'grade_id' => 'required|exists:grades,id',
+        'subject_id' => 'required|exists:subjects,id',
+        'medium' => 'required|in:si,en,ta',
+        'title' => 'required|string|max:255',
+        'material_type' => 'required|in:lesson,past_paper',
 
-        $file = $request->file('file');
-        $path = $file->store('materials', 's3');
+        'file' => [
+            'required',
+            'file',
+            'max:102400',
 
-        /*
-        |--------------------------------------------------------------------------
-        | File Extension
-        |--------------------------------------------------------------------------
-        */
+            function ($attribute, $value, $fail) use ($request) {
 
-        $extension = strtolower($file->getClientOriginalExtension());
+                $extension = strtolower(
+                    $value->getClientOriginalExtension()
+                );
 
-        /*
-        |--------------------------------------------------------------------------
-        | TXT Extraction (Immediate)
-        |--------------------------------------------------------------------------
-        */
+                /*
+                |--------------------------------------------------------------------------
+                | Past Paper
+                |--------------------------------------------------------------------------
+                |
+                | Past papers use GPT-4o Vision.
+                | Therefore they must be PDF files.
+                |
+                */
 
-        $extractedText = null;
-        $processingStatus = 'pending';
+                if ($request->material_type === 'past_paper') {
 
-        if ($extension === 'txt') {
-            try {
-                $fullPath = storage_path('app/public/' . $path);
-                $extractedText = file_get_contents($fullPath);
-                $processingStatus = 'completed';
-            } catch (\Exception $e) {
-                Log::error('TXT Extraction Failed', [
-                    'error' => $e->getMessage(),
-                    'file' => $path,
-                ]);
-                $processingStatus = 'failed';
-            }
-        }
+                    if ($extension !== 'pdf') {
+                        $fail(
+                            'Past papers must be uploaded as PDF files.'
+                        );
+                    }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Save Material
-        |--------------------------------------------------------------------------
-        */
-
-        $material = Material::create([
-            'grade_id' => $request->grade_id,
-            'subject_id' => $request->subject_id,
-            'uploaded_by' => auth()->id(), // 👈 Keep this
-            'title' => $request->title,
-            'material_type' => $request->material_type,
-            'file_name' => $file->getClientOriginalName(),
-            'file_path' => $path,
-            'file_type' => $extension,
-            'file_size' => $file->getSize(),
-            'extracted_text' => $extractedText,
-            'processing_status' => $processingStatus,
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Dispatch Processing Job
-        |--------------------------------------------------------------------------
-        */
-
-        if ($extension === 'pdf') {
-
-            try {
-
-                if ($material->material_type === 'past_paper') {
-
-                    Log::info('Dispatching Past Paper Job', ['material_id' => $material->id]);
-                    \App\Jobs\GeneratePastPaperQuestionsJob::dispatch($material);
-
-                } else {
-
-                    Log::info('Dispatching Lesson OCR Job', ['material_id' => $material->id]);
-                    \App\Jobs\ProcessMaterialOCR::dispatch($material);
-
+                    return;
                 }
 
-            } catch (\Throwable $e) {
+                /*
+                |--------------------------------------------------------------------------
+                | Lesson Material
+                |--------------------------------------------------------------------------
+                */
 
-                Log::error('JOB DISPATCH FAILED', [
+                if (!in_array($extension, ['pdf', 'docx', 'txt'])) {
+
+                    $fail(
+                        'Lesson materials must be PDF, DOCX, or TXT files.'
+                    );
+                }
+            },
+        ],
+    ]);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Store File
+    |--------------------------------------------------------------------------
+    */
+
+    $file = $request->file('file');
+
+    $path = $file->store('materials', 's3');
+
+    /*
+    |--------------------------------------------------------------------------
+    | File Extension
+    |--------------------------------------------------------------------------
+    */
+
+    $extension = strtolower(
+        $file->getClientOriginalExtension()
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Initial Processing Status
+    |--------------------------------------------------------------------------
+    */
+
+    $processingStatus = 'pending';
+    $extractedText = null;
+
+    /*
+    |--------------------------------------------------------------------------
+    | TXT Extraction
+    |--------------------------------------------------------------------------
+    |
+    | TXT is only supported for lesson materials.
+    |
+    */
+
+    if (
+        $request->material_type === 'lesson' &&
+        $extension === 'txt'
+    ) {
+
+        try {
+
+            $extractedText = Storage::disk('s3')->get($path);
+
+            $processingStatus = 'completed';
+
+        } catch (\Throwable $e) {
+
+            Log::error('TXT Extraction Failed', [
+                'material_type' => $request->material_type,
+                'error' => $e->getMessage(),
+                'file' => $path,
+            ]);
+
+            $processingStatus = 'failed';
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Save Material
+    |--------------------------------------------------------------------------
+    */
+
+    $material = Material::create([
+        'grade_id' => $request->grade_id,
+        'subject_id' => $request->subject_id,
+        'medium' => $request->medium,  // ✅ Added medium
+        'uploaded_by' => auth()->id(),
+
+        'title' => $request->title,
+
+        'material_type' => $request->material_type,
+
+        'file_name' => $file->getClientOriginalName(),
+        'file_path' => $path,
+        'file_type' => $extension,
+        'file_size' => $file->getSize(),
+
+        'extracted_text' => $extractedText,
+
+        'processing_status' => $processingStatus,
+    ]);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Dispatch Processing
+    |--------------------------------------------------------------------------
+    */
+
+    if ($extension === 'pdf') {
+
+        try {
+
+            /*
+            |--------------------------------------------------------------------------
+            | PAST PAPER
+            |--------------------------------------------------------------------------
+            |
+            | PDF → Page Images → GPT-4o Vision
+            | → Exact Question Extraction
+            |
+            */
+
+            if ($material->material_type === 'past_paper') {
+
+                Log::info(
+                    'Dispatching Past Paper Vision Job',
+                    [
+                        'material_id' => $material->id,
+                        'file' => $material->file_name,
+                    ]
+                );
+
+                \App\Jobs\GeneratePastPaperQuestionsJob::dispatch(
+                    $material
+                );
+
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | LESSON MATERIAL
+            |--------------------------------------------------------------------------
+            |
+            | Keep existing working Lesson pipeline.
+            |
+            */
+
+            else {
+
+                Log::info(
+                    'Dispatching Lesson OCR Job',
+                    [
+                        'material_id' => $material->id,
+                        'file' => $material->file_name,
+                    ]
+                );
+
+                \App\Jobs\ProcessMaterialOCR::dispatch(
+                    $material
+                );
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::error(
+                'JOB DISPATCH FAILED',
+                [
+                    'material_id' => $material->id,
+                    'material_type' => $material->material_type,
                     'message' => $e->getMessage(),
                     'file' => $e->getFile(),
                     'line' => $e->getLine(),
-                ]);
+                ]
+            );
 
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Job dispatch failed: '.$e->getMessage(),
-                ], 500);
-            }
+            /*
+            |--------------------------------------------------------------------------
+            | Mark Material Failed
+            |--------------------------------------------------------------------------
+            */
+
+            $material->update([
+                'processing_status' => 'failed',
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Job dispatch failed: ' . $e->getMessage(),
+            ], 500);
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Response
-        |--------------------------------------------------------------------------
-        */
-
-        return response()->json([
-            'success' => true,
-            'message' => $extension === 'pdf'
-                ? 'Material uploaded. OCR processing started.'
-                : 'Material uploaded successfully',
-            'data' => [
-                'id' => $material->id,
-                'title' => $material->title,
-                'file_name' => $material->file_name,
-                'processing_status' => $material->processing_status,
-            ]
-        ]);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Response
+    |--------------------------------------------------------------------------
+    */
+
+    $message = $material->material_type === 'past_paper'
+        ? 'Past paper uploaded. Question extraction started.'
+        : (
+            $extension === 'pdf'
+                ? 'Material uploaded. OCR processing started.'
+                : 'Material uploaded successfully.'
+        );
+
+    return response()->json([
+        'success' => true,
+
+        'message' => $message,
+
+        'data' => [
+            'id' => $material->id,
+            'title' => $material->title,
+            'file_name' => $material->file_name,
+            'material_type' => $material->material_type,
+            'medium' => $material->medium,  // ✅ Added medium to response
+            'processing_status' => $material->processing_status,
+        ],
+    ]);
+}
 
     /**
      * Materials List - All Materials (No User Filter)
@@ -184,6 +327,7 @@ class MaterialController extends Controller
                 'id' => $material->id,
                 'title' => $material->title,
                 'file_name' => $material->file_name,
+                'medium' => $material->medium,  // ✅ Added medium
                 'file_type' => $material->file_type,
                 'file_size' => $material->file_size,
                 'processing_status' => $material->processing_status,
@@ -316,6 +460,7 @@ class MaterialController extends Controller
                 'title' => 'sometimes|required|string|max:255',
                 'grade_id' => 'sometimes|required|exists:grades,id',
                 'subject_id' => 'sometimes|required|exists:subjects,id',
+                'medium' => 'sometimes|required|in:si,en,ta',
             ]);
 
             $material->update($validated);

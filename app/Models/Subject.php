@@ -5,17 +5,14 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
-use App\Models\Grade;
-use App\Models\User;
-use App\Models\Material;
-use App\Models\Question;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Subject extends Model
 {
     protected $fillable = [
-        'grade_id',
         'name',
         'slug',
+        'grade_category',
         'icon',
         'color',
         'description',
@@ -23,12 +20,14 @@ class Subject extends Model
         'is_active',
     ];
 
-    public function grades()
+    public function grades(): BelongsToMany
     {
         return $this->belongsToMany(
             Grade::class,
             'grade_subjects'
-        )->withTimestamps();
+        )
+        ->withPivot('al_streams')
+        ->withTimestamps();
     }
 
     public function materials(): HasMany
@@ -36,19 +35,24 @@ class Subject extends Model
         return $this->hasMany(Material::class);
     }
 
+    public function pastPapers(): HasMany
+    {
+        return $this->hasMany(PastPaper::class);
+    }
+
     public function questions(): HasManyThrough
     {
         return $this->hasManyThrough(
             Question::class,
             Material::class,
-            'subject_id',   // Foreign key on materials table
-            'material_id',  // Foreign key on questions table
-            'id',           // Local key on subjects table
-            'id'            // Local key on materials table
+            'subject_id',
+            'material_id',
+            'id',
+            'id'
         );
     }
 
-    public function users()
+    public function users(): BelongsToMany
     {
         return $this->belongsToMany(
             User::class,
