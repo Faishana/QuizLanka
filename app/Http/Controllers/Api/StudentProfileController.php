@@ -6,10 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Jobs\GenerateProfileAvatarJob;
 use App\Models\Grade;
 use App\Models\Quiz;
+use App\Models\User;
 use App\Services\StatisticsService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class StudentProfileController extends Controller
 {
@@ -93,12 +95,6 @@ class StudentProfileController extends Controller
         |--------------------------------------------------------------------------
         | Subject Progress
         |--------------------------------------------------------------------------
-        |
-        | Get subjects according to the student's grade.
-        |
-        | A/L students receive only subjects assigned to their
-        | selected stream through grade_subjects.al_streams.
-        |
         */
 
         if ($user->grade) {
@@ -128,7 +124,6 @@ class StudentProfileController extends Controller
 
                 } else {
 
-                    // No subjects if the A/L stream is missing or invalid.
                     $subjectsQuery->whereRaw('1 = 0');
                 }
             }
@@ -173,12 +168,6 @@ class StudentProfileController extends Controller
                     (clone $subjectQuizzes)->sum('score') ?? 0
                 );
 
-                /*
-                |--------------------------------------------------------------------------
-                | Subject Rank
-                |--------------------------------------------------------------------------
-                */
-
                 $subjectRank = 0;
 
                 if ($quizCount > 0) {
@@ -205,10 +194,6 @@ class StudentProfileController extends Controller
         |--------------------------------------------------------------------------
         | Weekly Progress
         |--------------------------------------------------------------------------
-        |
-        | Last 7 days.
-        | Each point represents that day's average quiz percentage.
-        |
         */
 
         $weeklyProgress = collect();
@@ -310,12 +295,6 @@ class StudentProfileController extends Controller
 
             'success' => true,
 
-            /*
-            |--------------------------------------------------------------------------
-            | User
-            |--------------------------------------------------------------------------
-            */
-
             'user' => [
 
                 'id' => $user->id,
@@ -350,12 +329,6 @@ class StudentProfileController extends Controller
                 ],
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Statistics
-            |--------------------------------------------------------------------------
-            */
-
             'statistics' => [
 
                 'level' => $level,
@@ -375,12 +348,6 @@ class StudentProfileController extends Controller
                 'longest_streak' => $longestStreak,
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Ranking
-            |--------------------------------------------------------------------------
-            */
-
             'ranking' => [
 
                 'national_rank' => $ranking['national_rank'],
@@ -388,45 +355,22 @@ class StudentProfileController extends Controller
                 'school_rank' => $ranking['school_rank'],
             ],
 
-            /*
-            |--------------------------------------------------------------------------
-            | Achievements
-            |--------------------------------------------------------------------------
-            */
-
             'achievements' => $achievements,
-
-            /*
-            |--------------------------------------------------------------------------
-            | Subject Analytics
-            |--------------------------------------------------------------------------
-            */
 
             'subjects' => $subjects,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Weekly Progress
-            |--------------------------------------------------------------------------
-            */
-
             'weekly_progress' => $weeklyProgress,
-
-            /*
-            |--------------------------------------------------------------------------
-            | Strongest Subject
-            |--------------------------------------------------------------------------
-            */
 
             'strongest_subject' => $strongestSubject,
 
-            /*
-            |--------------------------------------------------------------------------
-            | AI Improvement
-            |--------------------------------------------------------------------------
-            */
-
             'ai_improvement' => $aiImprovement,
+
+            'sharing' => [
+                'is_enabled' => (bool) $user->public_profile_enabled,
+                'share_url' => $user->public_profile_enabled
+                    ? $this->getPublicProfileUrl($user->public_profile_token)
+                    : null,
+            ],
         ]);
     }
 
@@ -439,12 +383,6 @@ class StudentProfileController extends Controller
     public function update(Request $request)
     {
         $user = $request->user();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Request
-        |--------------------------------------------------------------------------
-        */
 
         $validated = $request->validate([
             'name' => [
@@ -496,12 +434,6 @@ class StudentProfileController extends Controller
                 'max:255',
             ],
         ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Determine Account Category
-        |--------------------------------------------------------------------------
-        */
 
         $isGovernmentCandidate =
             $validated['grade_category'] === 'gov';
@@ -568,8 +500,8 @@ class StudentProfileController extends Controller
             'name' => $validated['name'],
 
             'user_category' => $isGovernmentCandidate
-                ? \App\Models\User::CATEGORY_GOV_EXAM
-                : \App\Models\User::CATEGORY_STUDENT,
+                ? User::CATEGORY_GOV_EXAM
+                : User::CATEGORY_STUDENT,
 
             'grade_id' => $grade?->id,
 
@@ -607,19 +539,12 @@ class StudentProfileController extends Controller
 
                 $user->update($updateData);
 
-                // Synchronize Spatie role with the updated category.
                 $user->syncCategoryRole();
 
             });
 
             $user->refresh();
             $user->load('grade');
-
-            /*
-            |--------------------------------------------------------------------------
-            | Response
-            |--------------------------------------------------------------------------
-            */
 
             return response()->json([
                 'success' => true,
@@ -670,7 +595,6 @@ class StudentProfileController extends Controller
     }
 
 
-
     /**
      * Upload profile photo and generate AI avatar.
      *
@@ -679,28 +603,15 @@ class StudentProfileController extends Controller
     public function uploadPhoto(Request $request)
     {
         $request->validate([
-
             'photo' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
         ]);
 
         $user = $request->user();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Temporary Upload
-        |--------------------------------------------------------------------------
-        */
-
         $tempPath = $request->file('photo')->store(
             'temp/profile',
             'local'
         );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Queue Avatar Generation
-        |--------------------------------------------------------------------------
-        */
 
         GenerateProfileAvatarJob::dispatch(
             $user->id,
@@ -708,18 +619,213 @@ class StudentProfileController extends Controller
         );
 
         return response()->json([
-
             'success' => true,
-
             'message' => 'Avatar generation has started.',
         ]);
     }
 
 
     // ========================================================================
-    // PRIVATE HELPERS
+    // SHARE PROFILE
     // ========================================================================
 
+    /**
+     * Enable public profile sharing.
+     *
+     * POST /api/profile/share
+     */
+    public function enableProfileSharing(Request $request)
+    {
+        $user = $request->user();
+
+        try {
+
+            if (empty($user->public_profile_token)) {
+                $user->public_profile_token = (string) Str::uuid();
+            }
+
+            $user->public_profile_enabled = true;
+            $user->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Profile sharing enabled successfully.',
+
+                'data' => [
+                    'share_token' => $user->public_profile_token,
+
+                    'share_url' => $this->getPublicProfileUrl(
+                        $user->public_profile_token
+                    ),
+
+                    'is_enabled' => true,
+                ],
+            ]);
+
+        } catch (\Throwable $e) {
+
+            Log::error('Enable profile sharing failed', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to enable profile sharing.',
+            ], 500);
+        }
+    }
+
+
+    /**
+     * Disable public profile sharing.
+     *
+     * DELETE /api/profile/share
+     */
+    public function disableProfileSharing(Request $request)
+    {
+        $user = $request->user();
+
+        try {
+
+            $user->public_profile_enabled = false;
+            $user->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Profile sharing disabled successfully.',
+
+                'data' => [
+                    'is_enabled' => false,
+                ],
+            ]);
+
+        } catch (\Throwable $e) {
+
+            Log::error('Disable profile sharing failed', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to disable profile sharing.',
+            ], 500);
+        }
+    }
+
+
+    /**
+     * Display public student profile.
+     *
+     * GET /api/public/profiles/{token}
+     *
+     * No authentication required.
+     */
+    public function publicProfile(string $token)
+    {
+        $user = User::where('public_profile_token', $token)
+            ->where('public_profile_enabled', true)
+            ->with('grade')
+            ->first();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Profile not found or sharing is disabled.',
+            ], 404);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Statistics
+        |--------------------------------------------------------------------------
+        */
+
+        $statistics = $user->statistics;
+
+        $completedQuizzes = Quiz::where('user_id', $user->id)
+            ->where('is_completed', true);
+
+        $completedQuizCount = (clone $completedQuizzes)->count();
+
+        $averageAccuracy = round(
+            (float) ((clone $completedQuizzes)->avg('percentage') ?? 0),
+            2
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Public Achievements
+        |--------------------------------------------------------------------------
+        */
+
+        $achievements = $this->getAchievements($user);
+
+        /*
+        |--------------------------------------------------------------------------
+        | Public Response
+        |--------------------------------------------------------------------------
+        |
+        | Do not expose email, account identifiers, private settings,
+        | tokens or other sensitive account information.
+        |
+        */
+
+        return response()->json([
+            'success' => true,
+
+            'data' => [
+
+                'user' => [
+                    'name' => $user->name,
+
+                    'profile_image' => $user->profile_image,
+
+                    'grade' => $user->grade?->name,
+
+                    'grade_category' => $user->grade?->category,
+
+                    'target_exam' => $user->target_exam,
+                ],
+
+                'statistics' => [
+                    'level' => (int) ($statistics?->level ?? 1),
+
+                    'xp' => (int) ($statistics?->xp ?? 0),
+
+                    'completed_quizzes' => $completedQuizCount,
+
+                    'average_accuracy' => $averageAccuracy,
+                ],
+
+                'achievements' => $achievements,
+            ],
+        ]);
+    }
+
+
+    /**
+     * Build public frontend profile URL.
+     */
+    private function getPublicProfileUrl(?string $token): ?string
+    {
+        if (!$token) {
+            return null;
+        }
+
+        $frontendUrl = rtrim(
+            config('app.frontend_url', config('app.url')),
+            '/'
+        );
+
+        return $frontendUrl . '/profile/' . $token;
+    }
+
+
+    // ========================================================================
+    // PRIVATE HELPERS
+    // ========================================================================
 
     /**
      * Get national and school ranking.
@@ -767,15 +873,8 @@ class StudentProfileController extends Controller
                     '=',
                     'users.id'
                 )
-                ->where(
-                    'users.school',
-                    $user->school
-                )
-                ->where(
-                    "{$table}.xp",
-                    '>',
-                    $xp
-                )
+                ->where('users.school', $user->school)
+                ->where("{$table}.xp", '>', $xp)
                 ->count() + 1;
         }
 
@@ -788,8 +887,6 @@ class StudentProfileController extends Controller
 
     /**
      * Get subject-specific ranking.
-     *
-     * Uses completed quiz XP/score for the selected subject.
      */
     private function getSubjectRank(
         int $subjectId,
@@ -797,20 +894,14 @@ class StudentProfileController extends Controller
         int $userXp
     ): int {
 
-        $studentScores = Quiz::where(
-            'subject_id',
-            $subjectId
-        )
+        $studentScores = Quiz::where('subject_id', $subjectId)
             ->where('is_completed', true)
             ->select('user_id')
             ->selectRaw('SUM(score) as subject_xp')
             ->groupBy('user_id');
 
         $rank = DB::query()
-            ->fromSub(
-                $studentScores,
-                'subject_scores'
-            )
+            ->fromSub($studentScores, 'subject_scores')
             ->where('subject_xp', '>', $userXp)
             ->count() + 1;
 
@@ -837,7 +928,6 @@ class StudentProfileController extends Controller
                 ->map(function ($achievement) {
 
                     return [
-
                         'id' => $achievement->id,
 
                         'name' => $achievement->name ?? 'Achievement',
@@ -854,6 +944,11 @@ class StudentProfileController extends Controller
                 ->toArray();
 
         } catch (\Throwable $e) {
+
+            Log::warning('Unable to load user achievements', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
 
             return [];
         }
